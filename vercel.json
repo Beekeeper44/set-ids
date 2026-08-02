@@ -2,7 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "api/set-ids.js": { "maxDuration": 15 },
-    "api/card-match.js": { "maxDuration": 20 },
+    "api/card-match.js": { "maxDuration": 15 },
+    "api/card-sales.js": { "maxDuration": 25 },
     "api/card-ocr.js": { "maxDuration": 30 },
     "api/ch-test.js": { "maxDuration": 20 }
   }

@@ -143,6 +143,36 @@
   .matchgrid{display:grid;grid-template-columns:380px 1fr;gap:22px;align-items:start}
   @media(max-width:900px){.matchgrid{grid-template-columns:1fr}}
   .certbox{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px 18px 16px}
+  .mtoggle{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .mlabel{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:#c7d4cc}
+  .switch{display:inline-block;cursor:pointer}
+  .switch input{display:none}
+  .switch .track{display:block;width:42px;height:23px;border-radius:12px;background:#243029;border:1px solid #33443b;position:relative;transition:background .15s,border-color .15s}
+  .switch .knob{position:absolute;top:2px;left:2px;width:17px;height:17px;border-radius:50%;background:#8aa093;transition:transform .15s,background .15s}
+  .switch input:checked + .track{background:rgba(62,232,127,.25);border-color:var(--green)}
+  .switch input:checked + .track .knob{transform:translateX(19px);background:var(--green)}
+  #certMulti{width:100%;box-sizing:border-box;min-height:120px;resize:vertical;background:#0a0f0d;border:1px solid #2b3a32;border-radius:10px;color:#fff;font-family:'JetBrains Mono',monospace;font-size:16px;letter-spacing:.04em;padding:12px 14px;line-height:1.5}
+  #certMulti:focus{outline:none;border-color:var(--green);box-shadow:0 0 0 3px rgba(62,232,127,.12)}
+  #certMulti::placeholder{color:#4b5a51}
+  .batchbtn{margin-top:12px;width:100%}
+  /* batch results */
+  .bhead{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:#c7d4cc;margin-bottom:14px}
+  .bgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
+  .ccard{display:flex;gap:12px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px;cursor:pointer;transition:border-color .15s,background .15s}
+  .ccard:hover{border-color:var(--green);background:rgba(62,232,127,.04)}
+  .ccard.loading{opacity:.6}
+  .ccard.miss{opacity:.7}
+  .cimg{width:54px;height:76px;flex-shrink:0;border-radius:7px;overflow:hidden;background:#0a0f0d;border:1px solid var(--border);display:flex;align-items:center;justify-content:center}
+  .cimg img{width:100%;height:100%;object-fit:cover}
+  .cnoimg{color:#3a4a41;font-size:11px;font-family:'JetBrains Mono',monospace}
+  .cbody{min-width:0;flex:1}
+  .ccert{font-family:'JetBrains Mono',monospace;font-size:12px;color:#c7d4cc;letter-spacing:.03em}
+  .ctitle{font-size:15px;font-weight:700;color:#fff;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cset{font-size:12px;color:#8aa093;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  .cvals{display:flex;gap:12px;margin-top:7px;font-family:'JetBrains Mono',monospace;font-weight:800;font-size:15px}
+  .cest{color:var(--green)}
+  .clast{color:#ff8a5c}
+  .resultwrap{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:22px;align-items:stretch}
   .certlabel{font-family:'JetBrains Mono',monospace;font-size:11.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
   #certInput{width:100%;box-sizing:border-box;background:#0a0f0d;border:1px solid #2b3a32;border-radius:10px;color:#fff;font-family:'JetBrains Mono',monospace;font-size:22px;letter-spacing:.06em;padding:14px 16px}
   #certInput:focus{outline:none;border-color:var(--green);box-shadow:0 0 0 3px rgba(62,232,127,.12)}
@@ -195,6 +225,7 @@
   .estlabel{font-family:'JetBrains Mono',monospace;font-size:11.5px;letter-spacing:.13em;text-transform:uppercase;color:#c7d4cc}
   .estnum{font-size:33px;font-weight:800;color:var(--green);font-family:'JetBrains Mono',monospace;line-height:1.1;margin-top:3px}
   .estval.ch .estnum{color:#ff8a5c}
+  .estnum.novalue{font-size:20px}
   .estmeta{font-size:12.5px;color:#c7d4cc;margin-top:5px;font-family:'JetBrains Mono',monospace}
   .frow{display:grid;grid-template-columns:160px 1fr;gap:14px;padding:11px 10px;border-bottom:1px solid rgba(255,255,255,.06);border-radius:8px}
   .frow.copyable{cursor:pointer}
@@ -218,6 +249,8 @@
   .avgcol{min-width:0}
   .avgnum{font-size:34px;font-weight:800;color:#ff8a5c;font-family:'JetBrains Mono',monospace;line-height:1.1;margin-top:3px}
   .avgsub{font-size:12px;color:#c7d4cc;margin-top:5px;font-family:'JetBrains Mono',monospace}
+  .avgnum.nosale{font-size:20px}
+  .nokey{margin-top:12px;font-size:12.5px;color:#c7d4cc;font-family:'JetBrains Mono',monospace}
   .salechip{flex:1;min-width:82px;background:#0a0f0d;border:1px solid var(--border);border-radius:10px;padding:10px 12px}
   .sk{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#c7d4cc;font-family:'JetBrains Mono',monospace}
   .sv{font-size:19px;font-weight:800;color:var(--green);margin-top:3px;font-family:'JetBrains Mono',monospace}
@@ -230,6 +263,10 @@
   .salesempty{color:#c7d4cc;font-size:13.5px;line-height:1.6}
   .salesempty span{color:#8aa093;font-size:12.5px}
   .chconnect{color:#ff8a5c!important;cursor:pointer;text-decoration:underline;font-size:13px!important}
+  .keyrow{display:flex;gap:8px;align-items:stretch}
+  .keyrow #chKeyInput{flex:1;min-width:0}
+  .keyeye{background:#0a0f0d;border:1px solid #2b3a32;border-radius:8px;color:#c7d4cc;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;padding:0 12px;cursor:pointer}
+  .keyeye:hover{color:#fff;border-color:var(--green)}
   .salehl{font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#c7d4cc;margin:-4px 0 12px}
   a.sp{color:#fff;text-decoration:none}
   a.sp:hover{color:var(--green);text-decoration:underline}
@@ -301,6 +338,11 @@
 <div id="viewMatch">
   <div class="matchgrid">
     <div class="matchside">
+      <div class="mtoggle">
+        <label class="switch"><input type="checkbox" id="multiToggle" onchange="setMulti(this.checked)"><span class="track"><span class="knob"></span></span></label>
+        <span class="mlabel">Multiple certs</span>
+      </div>
+      <div id="singleInputs">
       <div class="certbox">
         <div class="certlabel">Cert number — scan or type, press Enter</div>
         <input id="certInput" placeholder="e.g. 146341954" autocomplete="off"
@@ -315,6 +357,20 @@
         <input id="acInput" placeholder="e.g. 8AC000123" autocomplete="off"
                onkeydown="if(event.key==='Enter'){event.preventDefault();matchAc(this.value);}">
         <div class="certtip">Cert uses the grader above · 8AC looks up the Arena Club record</div>
+      </div>
+      </div>
+      <div id="multiInputs" hidden>
+        <div class="certbox">
+          <div class="certlabel">Paste multiple certs — any separator (space, comma, new line)</div>
+          <textarea id="certMulti" placeholder="145065448&#10;137978341&#10;52009639"></textarea>
+          <div class="graderrow"><span>Grader</span>
+            <select id="graderSel2" class="gradersel">
+              <option>PSA</option><option>BGS</option><option>SGC</option><option>CGC</option><option>CSG</option>
+            </select>
+          </div>
+          <button class="save-btn batchbtn" onclick="batchLookup()">Look up certs</button>
+          <div class="certtip">Drop/paste a slab image too — it adds the read cert to the list.</div>
+        </div>
       </div>
       <div id="ocrDrop" class="ocrdrop">
         <input id="ocrFile" type="file" accept="image/*" hidden>
@@ -334,6 +390,7 @@
         <div id="matchCard" class="cardresult"></div>
         <aside id="matchSales" class="salespanel"></aside>
       </div>
+      <div id="matchBatch" hidden></div>
     </div>
   </div>
 </div><!-- /viewMatch -->
@@ -347,7 +404,12 @@
   <div class="modal" role="dialog" aria-modal="true">
     <div class="mhead"><h3>Card Hedger API key</h3><button class="mx" onclick="closeCh()" title="Close (Esc)">✕</button></div>
     <div class="mbody">
-      <label class="mfield"><span>API key</span><input id="chKeyInput" placeholder="Paste your Card Hedger key…" autocomplete="off"></label>
+      <label class="mfield"><span>API key</span>
+        <div class="keyrow">
+          <input id="chKeyInput" type="password" placeholder="Paste your Card Hedger key…" autocomplete="new-password" spellcheck="false">
+          <button type="button" class="keyeye" id="keyEye" onclick="toggleKeyVis()" title="Show / hide">Show</button>
+        </div>
+      </label>
       <div class="mhint">Stored only in this browser and sent to this app's own <code>/api</code> server, which calls Card Hedger for sales, FMV, and OCR. For a shared or more secure setup, set <b>CARDHEDGE_API_KEY</b> in Vercel instead.</div>
     </div>
     <div class="mactions">
@@ -699,10 +761,11 @@ try{Object.values(DEMO_CARDS).forEach(c=>{if(c)c.image=DEMO_IMG;});}catch(e){}
 let chKey='';
 try{ chKey=localStorage.getItem('ch_key')||''; }catch(e){}
 function chHeaders(base){ const h=Object.assign({}, base||{}); if(chKey) h['X-CH-Key']=chKey; return h; }
-function openCh(){ const i=$('chKeyInput'); if(i) i.value=chKey||''; $('chBack').classList.add('show'); setTimeout(()=>{ const i2=$('chKeyInput'); if(i2) i2.focus(); },30); }
+function openCh(){ const i=$('chKeyInput'); if(i){ i.value=chKey||''; i.type='password'; } const e=$('keyEye'); if(e) e.textContent='Show'; $('chBack').classList.add('show'); setTimeout(()=>{ const i2=$('chKeyInput'); if(i2) i2.focus(); },30); }
+function toggleKeyVis(){ const i=$('chKeyInput'), e=$('keyEye'); if(!i) return; const show=i.type==='password'; i.type=show?'text':'password'; if(e) e.textContent=show?'Hide':'Show'; }
 function closeCh(){ $('chBack').classList.remove('show'); }
 function rerunLookup(){ const cert=$('certInput')&&$('certInput').value.trim(); const ac=$('acInput')&&$('acInput').value.trim(); if(cert) matchCert(cert); else if(ac) matchAc(ac); }
-function saveCh(){ chKey=(($('chKeyInput')&&$('chKeyInput').value)||'').trim(); try{ if(chKey) localStorage.setItem('ch_key',chKey); else localStorage.removeItem('ch_key'); }catch(e){} closeCh(); toast(chKey?'Card Hedger key saved':'Key cleared'); rerunLookup(); }
+function saveCh(){ chKey=(($('chKeyInput')&&$('chKeyInput').value)||'').trim(); try{ if(chKey) localStorage.setItem('ch_key',chKey); else localStorage.removeItem('ch_key'); }catch(e){} const i=$('chKeyInput'); if(i) i.type='password'; const e=$('keyEye'); if(e) e.textContent='Show'; closeCh(); toast(chKey?'Card Hedger key saved':'Key cleared'); rerunLookup(); }
 function clearCh(){ chKey=''; try{ localStorage.removeItem('ch_key'); }catch(e){} if($('chKeyInput')) $('chKeyInput').value=''; toast('Key cleared'); }
 function openImg(src){ if(!src) return; $('imgBig').src=src; $('imgBack').classList.add('show'); }
 function closeImg(){ $('imgBack').classList.remove('show'); }
@@ -731,8 +794,8 @@ function fallbackCopy(v,done){
 function jumpToSet(setId){ switchView('sets'); active='All'; $('brandFilter').value=''; if($('yearFilter')) $('yearFilter').value=''; $('filter').value=setId; renderAll(); }
 
 function showMatchState(state, q){
-  const empty=$('matchEmpty'), wrap=$('matchResult');
-  if(wrap) wrap.hidden=true; empty.hidden=false;
+  const empty=$('matchEmpty'), wrap=$('matchResult'), b=$('matchBatch');
+  if(wrap) wrap.hidden=true; if(b) b.hidden=true; empty.hidden=false;
   if(state==='loading') empty.innerHTML='<div class="me-big">◎</div><div>Looking up '+esc(q||'')+'…</div>';
   else if(state==='notfound') empty.innerHTML='<div class="me-big">∅</div><div>No match for <b>'+esc(q||'')+'</b> in Metabase or Card Hedger.</div>';
   else if(state==='error') empty.innerHTML='<div class="me-big">!</div><div>Lookup failed for <b>'+esc(q||'')+'</b>. Check the connection and try again.</div>';
@@ -756,6 +819,7 @@ const FIELD_DEFS=[
   ['card_no','Card No.',{mono:1}],
   ['__rookie','Rookie',{rookie:1}],
   ['variant','Variant',{core:1}],
+  ['finish','Finish',{core:1}],
   ['full_art','Full Art',{core:1}],
   ['rarity','Rarity',{core:1}],
   ['edition','Edition',{core:1}],
@@ -764,20 +828,48 @@ const FIELD_DEFS=[
   ['tag','Tag',{mono:1}]
 ];
 
+function detectEdition(cands){
+  for(const s of (cands||[])){
+    if(!s) continue; const t=String(s).toLowerCase();
+    if(/1st\s*ed|first\s*ed/.test(t)) return '1st Edition';
+    if(/shadowless/.test(t)) return 'Shadowless';
+    if(/unlimited/.test(t)) return 'Unlimited';
+  }
+  return '';
+}
+function detectFinish(cands){
+  for(const s of (cands||[])){
+    if(!s) continue; const t=String(s).toLowerCase();
+    if(/reverse\s*foil|rev\.?\s*foil/.test(t)) return 'Reverse Foil';
+    if(/reverse\s*holo|rev\.?\s*holo/.test(t)) return 'Reverse Holo';
+    if(/holo(?:foil|graphic)?/.test(t)) return 'Holo';
+    if(/\bfoil\b/.test(t)) return 'Foil';
+  }
+  return '';
+}
 function money(n){ if(n===''||n==null||isNaN(Number(n))) return ''; const x=Number(n); return '$'+x.toLocaleString(undefined,{minimumFractionDigits:Number.isInteger(x)?0:2,maximumFractionDigits:2}); }
 
 function trimmedAvg(recent){
-  const ps=(recent||[]).slice(0,5).map(r=>Number(r.price)).filter(p=>!isNaN(p));
-  if(!ps.length) return '';
-  const s=[...ps].sort((a,b)=>a-b);
-  const mid = s.length>=3 ? s.slice(1,s.length-1) : s;   // drop one high + one low when we have 5 (or 3+)
-  const m = mid.length%2 ? mid[(mid.length-1)/2] : (mid[mid.length/2-1]+mid[mid.length/2])/2;
-  return Math.round(m*100)/100;
+  const rows=(recent||[]).filter(r=>r.price!==''&&r.price!=null&&r.date);
+  const times=rows.map(r=>Date.parse(r.date)).filter(t=>!isNaN(t));
+  if(!times.length) return '';
+  const anchor=Math.max.apply(null,times);          // most recent sale day
+  const cutoff=anchor-10*86400000;                  // 10 days back
+  let prices=rows.filter(r=>{ const t=Date.parse(r.date); return !isNaN(t)&&t>=cutoff; }).map(r=>Number(r.price)).filter(p=>!isNaN(p));
+  if(!prices.length) return '';
+  if(prices.length>=3){ const s=[...prices].sort((a,b)=>a-b); s.shift(); s.pop(); prices=s; } // drop lowest + highest
+  const avg=prices.reduce((a,b)=>a+b,0)/prices.length;
+  return Math.round(avg);                            // whole dollars, no decimals
 }
 function renderSales(sales){
   const el=$('matchSales'); if(!el) return;
   const has = sales && sales.recent && sales.recent.length;
-  if(!has){ el.innerHTML='<div class="salehead">Recent sales</div><div class="salesempty">No sales data.<br><span class="chconnect" onclick="openCh()">Add Card Hedger key</span></div>'; return; }
+  if(!has){
+    const keyLink = !chKey ? '<div class="nokey">No Card Hedger key set · <span class="chconnect" onclick="openCh()">Add key</span></div>' : '';
+    el.innerHTML='<div class="salehead">Recent sales <span class="salesrc"><img class="chlogo" src="'+CH_LOGO+'" alt="">Card Hedger</span></div>'+
+      '<div class="saleavg"><div class="avgcol"><div class="sk">Avg sale</div><div class="avgnum nosale">No Recent Sales</div></div><img class="estlogo" src="'+CH_LOGO+'" alt=""></div>'+keyLink;
+    return;
+  }
   const avg=trimmedAvg(sales.recent);
   const avgHtml = avg!=='' ? '<div class="saleavg"><div class="avgcol"><div class="sk">Avg sale</div><div class="avgnum">'+esc(money(avg))+'</div></div><img class="estlogo" src="'+CH_LOGO+'" alt=""></div>' : '';
   const list=(sales.recent||[]).slice(0,16).map(r=>{
@@ -792,6 +884,7 @@ function renderSales(sales){
 
 function renderCard(c, source, demo){
   $('matchEmpty').hidden=true; $('matchResult').hidden=false;
+  const b=$('matchBatch'); if(b) b.hidden=true;
   const isCH=source==='cardhedge';
   const adminLink=c.admin_url?'<a class="adminlink" href="'+esc(c.admin_url)+'" target="_blank" rel="noopener">Link ↗</a>':'';
   const demoBadge=demo?'<span class="cardsrc demo">Demo data</span>':'';
@@ -815,13 +908,10 @@ function renderCard(c, source, demo){
   });
   let est='';
   const boxes=[];
-  if(c.estimate && c.estimate.value!==''&&c.estimate.value!=null){
-    const e=c.estimate; let sub, logo, ch=false;
-    if(e.method==='metabase'){ sub='Arena Club'; logo=AC_LOGO; }
-    else if(e.method==='fmv'){ sub='Card Hedger FMV'+(e.confidence?' · '+e.confidence:''); logo=CH_LOGO; ch=true; }
-    else { sub='Comp price'; logo=CH_LOGO; ch=true; }
-    boxes.push({label:'Est. Value', val:money(e.value), sub, logo, ch});
-  }
+  // Est. Value — always Arena Club (green). Shows the Metabase value, or "No Est Value".
+  const mbVal = (c.estimate && c.estimate.method==='metabase' && c.estimate.value!==''&&c.estimate.value!=null) ? c.estimate.value : '';
+  if(mbVal!=='') boxes.push({label:'Est. Value', val:money(mbVal), sub:'Arena Club', logo:AC_LOGO});
+  else boxes.push({label:'Est. Value', val:'No Est Value', sub:'Arena Club', logo:AC_LOGO, small:true});
   const rc = c.sales && c.sales.recent && c.sales.recent[0];
   let chLast='';
   if(c.sales && c.sales.summary && c.sales.summary.last!==''&&c.sales.summary.last!=null) chLast=c.sales.summary.last;
@@ -833,7 +923,7 @@ function renderCard(c, source, demo){
   if(boxes.length){
     est='<div class="estrow">'+boxes.map(b=>{
       const logo=b.logo?'<img class="estlogo" src="'+b.logo+'" alt="">':'';
-      return '<div class="estval'+(b.ch?' ch':'')+'"><div class="estcol"><div class="estlabel">'+b.label+'</div><div class="estnum">'+esc(b.val)+'</div><div class="estmeta">'+esc(b.sub)+'</div></div>'+logo+'</div>';
+      return '<div class="estval'+(b.ch?' ch':'')+'"><div class="estcol"><div class="estlabel">'+b.label+'</div><div class="estnum'+(b.small?' novalue':'')+'">'+esc(b.val)+'</div><div class="estmeta">'+esc(b.sub)+'</div></div>'+logo+'</div>';
     }).join('')+'</div>';
   }
   $('matchCard').innerHTML=
@@ -842,32 +932,115 @@ function renderCard(c, source, demo){
   renderSales(c.sales);
 }
 
-async function lookup(url, q){
+function renderSalesLoading(){ const el=$('matchSales'); if(el) el.innerHTML='<div class="salehead">Recent sales <span class="salesrc"><img class="chlogo" src="'+CH_LOGO+'" alt="">Card Hedger</span></div><div class="salesempty">Loading comps\u2026</div>'; }
+
+async function doLookup(matchUrl, q){
   showMatchState('loading', q);
-  let liveOk=false;
+  let card=null, source='metabase';
   try{
-    const res=await fetch(url, {headers: chHeaders()});
-    if(res.ok){ liveOk=true; const data=await res.json(); if(data && data.card){ renderCard(data.card, data.source||'metabase'); return; } }
+    const r=await fetch(matchUrl,{headers:chHeaders()});
+    if(r.ok){ const d=await r.json(); if(d && d.card){ card=d.card; source=d.source||'metabase'; } }
   }catch(e){}
-  // Offline / not-found → fall back to bundled demo data so the layout is viewable.
-  const demo = (typeof DEMO_CARDS!=='undefined') && (DEMO_CARDS[q] || DEMO_CARDS[String(q).replace(/\D/g,'')]);
-  if(demo){ renderCard(demo, 'metabase', true); return; }
-  showMatchState(liveOk?'notfound':'error', q);
+  if(!card){
+    const demo=(typeof DEMO_CARDS!=='undefined') && (DEMO_CARDS[q] || DEMO_CARDS[String(q).replace(/\D/g,'')]);
+    if(demo){ renderCard(demo,'metabase',true); return; }
+  }
+  if(card){ renderCard(card, source); renderSalesLoading(); }
+  const certForCH = card ? String(card.cert||'').replace(/\D/g,'') : String(q).replace(/\D/g,'');
+  const grader = ($('graderSel')&&$('graderSel').value)||'PSA';
+  if(!certForCH){ if(card) renderSales(card.sales||null); else showMatchState('notfound', q); return; }
+  try{
+    const r2=await fetch('/api/card-sales?cert_number='+encodeURIComponent(certForCH)+'&grader='+encodeURIComponent(grader)+(card?'':'&need_card=1'),{headers:chHeaders()});
+    if(r2.ok){
+      const s=await r2.json();
+      if(!card && s.card){ card=s.card; source='cardhedge'; }
+      if(card){
+        card.sales = s.sales||null;
+        const texts=[s.ch_variant, s.ch_desc, s.ch_cert_desc];
+        const fin=detectFinish([card.finish, card.variant, card.parallel].concat(texts));
+        if(fin) card.finish=fin;
+        if(!card.full_art){ const hay=[card.variant, card.rarity].concat(texts).map(x=>String(x||'').toLowerCase()).join(' | '); if(/full\s*art/.test(hay)) card.full_art='Yes'; }
+        if(!card.edition){ const ed=detectEdition([card.edition, card.variant].concat(texts)); if(ed) card.edition=ed; }
+        renderCard(card, source);
+      } else { showMatchState('notfound', q); }
+    } else { if(card) renderSales(card.sales||null); else showMatchState('notfound', q); }
+  }catch(e){ if(card) renderSales(card.sales||null); else showMatchState('error', q); }
 }
 
 async function matchAc(raw){
   const ac=String(raw||'').trim();
   const el=$('acInput'); if(el) el.value=ac;
   if(!ac){ showMatchState('empty'); return; }
-  lookup('/api/card-match?ac_number='+encodeURIComponent(ac), ac);
+  doLookup('/api/card-match?ac_number='+encodeURIComponent(ac), ac);
 }
-
 async function matchCert(raw){
   const cert=String(raw||'').replace(/\D/g,'');
   const inp=$('certInput'); if(inp) inp.value=cert;
   if(!cert){ showMatchState('empty'); return; }
   const grader=($('graderSel')&&$('graderSel').value)||'PSA';
-  lookup('/api/card-match?cert_number='+encodeURIComponent(cert)+'&grader='+encodeURIComponent(grader), cert);
+  doLookup('/api/card-match?cert_number='+encodeURIComponent(cert)+'&grader='+encodeURIComponent(grader), cert);
+}
+
+let multiMode=false;
+function setMulti(on){
+  multiMode=!!on;
+  $('singleInputs').hidden=multiMode;
+  $('multiInputs').hidden=!multiMode;
+  $('matchResult').hidden=true; $('matchBatch').hidden=true; $('matchEmpty').hidden=false;
+  $('matchEmpty').innerHTML=multiMode
+    ? '<div class="me-big">▤</div><div>Paste multiple certs on the left, then “Look up certs”.</div>'
+    : '<div class="me-big">◎</div><div>Scan or type a cert or 8AC, or drop a label image to look up a card.</div>';
+  setTimeout(()=>{ const el=multiMode?$('certMulti'):$('certInput'); if(el) el.focus(); },30);
+}
+function openFull(cert){
+  const t=$('multiToggle'); if(t) t.checked=false;
+  setMulti(false);
+  const c=$('certInput'); if(c) c.value=cert;
+  matchCert(cert);
+}
+async function fetchCompact(cert, grader){
+  let card=null, source='metabase';
+  try{ const r=await fetch('/api/card-match?cert_number='+encodeURIComponent(cert)+'&grader='+encodeURIComponent(grader),{headers:chHeaders()}); if(r.ok){ const d=await r.json(); if(d&&d.card){card=d.card;source=d.source||'metabase';} } }catch(e){}
+  if(!card){ const demo=(typeof DEMO_CARDS!=='undefined')&&DEMO_CARDS[cert]; if(demo) return {card:demo,source:'metabase'}; }
+  const cc=card?String(card.cert||'').replace(/\D/g,''):cert;
+  try{ const r2=await fetch('/api/card-sales?cert_number='+encodeURIComponent(cc)+'&grader='+encodeURIComponent(grader)+(card?'':'&need_card=1'),{headers:chHeaders()}); if(r2.ok){ const s=await r2.json(); if(!card&&s.card){card=s.card;source='cardhedge';} if(card){ card.sales=s.sales||null; } } }catch(e){}
+  return {card,source};
+}
+function compactHTML(card, cert){
+  if(!card) return '<div class="ccard miss" id="cc_'+esc(cert)+'"><div class="cimg"><div class="cnoimg">—</div></div><div class="cbody"><div class="ccert">'+esc(cert)+'</div><div class="ctitle">No match</div></div></div>';
+  const img=card.image?'<img src="'+esc(card.image)+'">':'<div class="cnoimg">—</div>';
+  const est=(card.estimate&&card.estimate.value!==''&&card.estimate.value!=null)?money(card.estimate.value):'';
+  const last=(card.sales&&card.sales.summary&&card.sales.summary.last!==''&&card.sales.summary.last!=null)?money(card.sales.summary.last):'';
+  const grade=card.grade_display||'';
+  const title=card.player||card.set_name||'—';
+  return '<div class="ccard" id="cc_'+esc(cert)+'" onclick="openFull(\''+esc(cert)+'\')" title="Open full detail">'+
+    '<div class="cimg">'+img+'</div>'+
+    '<div class="cbody">'+
+      '<div class="ccert">'+esc(cert)+(grade?' · '+esc(grade):'')+'</div>'+
+      '<div class="ctitle">'+esc(title)+'</div>'+
+      '<div class="cset">'+esc(card.set_name||'')+'</div>'+
+      '<div class="cvals">'+(est?'<span class="cest">'+esc(est)+'</span>':'')+(last?'<span class="clast">'+esc(last)+'</span>':'')+'</div>'+
+    '</div></div>';
+}
+async function batchLookup(){
+  const raw=($('certMulti')&&$('certMulti').value)||'';
+  const certs=[...new Set(raw.match(/\d{6,12}/g)||[])];
+  const grader=($('graderSel2')&&$('graderSel2').value)||'PSA';
+  $('matchEmpty').hidden=true; $('matchResult').hidden=true; $('matchBatch').hidden=false;
+  if(!certs.length){ $('matchBatch').innerHTML='<div class="bhead">Paste one or more cert numbers above, then Look up.</div>'; return; }
+  $('matchBatch').innerHTML='<div class="bhead">'+certs.length+' cert'+(certs.length>1?'s':'')+'</div><div class="bgrid" id="bgrid"></div>';
+  const grid=$('bgrid');
+  certs.forEach(ct=>{ const d=document.createElement('div'); d.className='ccard loading'; d.id='cc_'+ct; d.innerHTML='<div class="cimg"></div><div class="cbody"><div class="ccert">'+esc(ct)+'</div><div class="ctitle">Looking up…</div></div>'; grid.appendChild(d); });
+  let i=0; const pool=Math.min(4,certs.length);
+  async function worker(){
+    while(i<certs.length){
+      const ct=certs[i++];
+      let card=null; try{ const r=await fetchCompact(ct, grader); card=r.card; }catch(e){}
+      const el=document.getElementById('cc_'+ct);
+      if(el) el.outerHTML=compactHTML(card, ct);
+    }
+  }
+  await Promise.all(Array.from({length:pool}, worker));
 }
 
 function extractCert(text){
@@ -921,6 +1094,16 @@ async function ocrViaTesseract(file){
   }catch(e){}
   return null;
 }
+function normGrader(g){
+  const t=String(g||'').toUpperCase().replace(/[^A-Z]/g,'');
+  if(!t) return '';
+  if(t.indexOf('BECKETT')>=0||t==='BGS'||t==='BVG'||t==='BCCG'||t==='BAS') return 'BGS';
+  if(t.indexOf('PSA')>=0) return 'PSA';
+  if(t.indexOf('SGC')>=0) return 'SGC';
+  if(t.indexOf('CGC')>=0) return 'CGC';
+  if(t.indexOf('CSG')>=0) return 'CSG';
+  return '';
+}
 async function runOcr(file){
   const st=$('ocrStatus'); if(!file) return;
   st.textContent='Reading label…';
@@ -930,8 +1113,14 @@ async function runOcr(file){
   if(!r && dataURL) r=await ocrViaClaude(dataURL);
   if(!r) r=await ocrViaTesseract(file);
   if(r && r.cert){
-    if(r.grader && $('graderSel')){ const o=[...$('graderSel').options].find(x=>x.value===r.grader); if(o) $('graderSel').value=r.grader; }
-    st.textContent='Read '+r.cert+(r.grader?(' · '+r.grader):'')+' — matching…';
+    const g=normGrader(r.grader);
+    if(multiMode){
+      const ta=$('certMulti'); if(ta){ const cur=ta.value.replace(/\s+$/,''); ta.value=(cur?cur+'\n':'')+r.cert; }
+      if(g && $('graderSel2')){ const o2=[...$('graderSel2').options].find(x=>x.value===g); if(o2) $('graderSel2').value=g; }
+      st.textContent='Added '+r.cert+(g?(' · '+g):'')+' to the list'; return;
+    }
+    if(g && $('graderSel')){ const o=[...$('graderSel').options].find(x=>x.value===g); if(o) $('graderSel').value=g; }
+    st.textContent='Read '+r.cert+(g?(' · '+g):(r.grader?(' · '+r.grader):''))+' — matching…';
     matchCert(r.cert);
   } else {
     st.textContent="Couldn't read a cert. Try a tighter crop of the label, or type it.";
