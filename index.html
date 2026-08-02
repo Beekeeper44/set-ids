@@ -725,8 +725,8 @@ const FIELD_DEFS=[
   ['set_name','Set Name',{core:1}],
   ['set_id','Set ID',{setid:1,core:1}],
   ['subset','Subset'],
-  ['insert','Insert'],
-  ['insert_id','Insert ID',{mono:1}],
+  ['insert','Insert',{core:1}],
+  ['insert_id','Insert ID',{mono:1,core:1}],
   ['extra','Extra'],
   ['player','Player'],
   ['card_no','Card No.',{mono:1}],
@@ -769,7 +769,7 @@ function renderSales(sales){
 function renderCard(c, source, demo){
   $('matchEmpty').hidden=true; $('matchResult').hidden=false;
   const isCH=source==='cardhedge';
-  const adminLink=c.admin_url?'<a class="adminlink" href="'+esc(c.admin_url)+'" target="_blank" rel="noopener">Open in Admin ↗</a>':'';
+  const adminLink=c.admin_url?'<a class="adminlink" href="'+esc(c.admin_url)+'" target="_blank" rel="noopener">Link ↗</a>':'';
   const demoBadge=demo?'<span class="cardsrc demo">Demo data</span>':'';
   const img=c.image ? '<img src="'+esc(c.image)+'" alt="" onclick="openImg(this.src)"><span class="imgzoom">⤢</span>' : '<div class="noimg">no image</div>';
   let rows='';

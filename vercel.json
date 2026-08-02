@@ -3,6 +3,7 @@
   "functions": {
     "api/set-ids.js": { "maxDuration": 15 },
     "api/card-match.js": { "maxDuration": 20 },
-    "api/card-ocr.js": { "maxDuration": 30 }
+    "api/card-ocr.js": { "maxDuration": 30 },
+    "api/ch-test.js": { "maxDuration": 20 }
   }
 }
