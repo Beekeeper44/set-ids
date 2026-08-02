@@ -113,9 +113,8 @@ async function queryMetabase(BASE, KEY, CARD, filters) {
 
 // ---- Card Hedger: comparable sales by cert (also yields a card fallback) ----
 // POST /v1/cards/comps-by-cert  { cert_number, grading_company, limit }  (X-API-Key)
-async function cardHedgeComps(cert, grader, grade) {
+async function cardHedgeComps(cert, grader, grade, KEY) {
   const BASE = (process.env.CARDHEDGE_URL || 'https://api.cardhedger.com').replace(/\/+$/, '');
-  const KEY = process.env.CARDHEDGE_API_KEY;
   if (!KEY) return null;
   const body = { cert_number: cert, grading_company: grader, limit: 25, offset: 0 };
   if (grade) body.grade = String(grade);        // lock sales to the exact grade (e.g. PSA 10)
@@ -130,9 +129,8 @@ async function cardHedgeComps(cert, grader, grade) {
 
 // Card Hedger Fair Market Value by cert (our-system "estimate value").
 // POST /v1/cards/fmv-by-cert  { cert, grader }  (X-API-Key)
-async function cardHedgeFmv(cert, grader) {
+async function cardHedgeFmv(cert, grader, KEY) {
   const BASE = (process.env.CARDHEDGE_URL || 'https://api.cardhedger.com').replace(/\/+$/, '');
-  const KEY = process.env.CARDHEDGE_API_KEY;
   if (!KEY) return null;
   const r = await fetch(`${BASE}/v1/cards/fmv-by-cert`, {
     method: 'POST',
@@ -190,6 +188,7 @@ export default async function handler(req, res) {
   const CARD = process.env.CARD_MATCH_CARD_ID || '30460';
   const KEY  = process.env.METABASE_API_KEY;
   const defaultGrader = (process.env.CARDHEDGE_DEFAULT_GRADER || 'PSA').toUpperCase();
+  const chKey = (req.headers && req.headers['x-ch-key']) || (req.query && req.query.chkey) || process.env.CARDHEDGE_API_KEY;
 
   const q = req.query || {};
   const cert = String(q.cert_number || q.cert || '').replace(/\D/g, '');
@@ -217,7 +216,7 @@ export default async function handler(req, res) {
   let sales = null;
   if (certForCH) {
     try {
-      const comps = await cardHedgeComps(certForCH, grader, gradeLabel);
+      const comps = await cardHedgeComps(certForCH, grader, gradeLabel, chKey);
       if (comps) {
         sales = salesFromComps(comps);
         if (!card) { const chCard = cardFromComps(comps, certForCH); if (chCard) { card = chCard; source = 'cardhedge'; } }
@@ -235,7 +234,7 @@ export default async function handler(req, res) {
   }
   if (!estimate && certForCH) {
     try {
-      const f = await cardHedgeFmv(certForCH, grader);
+      const f = await cardHedgeFmv(certForCH, grader, chKey);
       const fmv = f && f.fmv;
       if (fmv && fmv.price != null) {
         estimate = {

@@ -229,6 +229,7 @@
   .sp{grid-area:p;align-self:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:#fff;font-size:18px}
   .salesempty{color:#c7d4cc;font-size:13.5px;line-height:1.6}
   .salesempty span{color:#8aa093;font-size:12.5px}
+  .chconnect{color:#ff8a5c!important;cursor:pointer;text-decoration:underline;font-size:13px!important}
   .salehl{font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#c7d4cc;margin:-4px 0 12px}
   a.sp{color:#fff;text-decoration:none}
   a.sp:hover{color:var(--green);text-decoration:underline}
@@ -251,6 +252,7 @@
 <nav>
   <button class="pill active" id="tabMatch" onclick="switchView('match')">Card Match</button>
   <button class="pill" id="tabSets" onclick="switchView('sets')">Sets</button>
+  <button class="pill" id="btnKey" onclick="openCh()" title="Card Hedger API key">API Key</button>
 </nav>
 
 <div id="viewSets" hidden>
@@ -339,6 +341,20 @@
 <div class="imgback" id="imgBack" onclick="closeImg()">
   <img id="imgBig" src="" alt="">
   <button class="imgx" onclick="closeImg()" title="Close (Esc)">✕</button>
+</div>
+
+<div class="mback" id="chBack" onclick="if(event.target===this)closeCh()">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="mhead"><h3>Card Hedger API key</h3><button class="mx" onclick="closeCh()" title="Close (Esc)">✕</button></div>
+    <div class="mbody">
+      <label class="mfield"><span>API key</span><input id="chKeyInput" placeholder="Paste your Card Hedger key…" autocomplete="off"></label>
+      <div class="mhint">Stored only in this browser and sent to this app's own <code>/api</code> server, which calls Card Hedger for sales, FMV, and OCR. For a shared or more secure setup, set <b>CARDHEDGE_API_KEY</b> in Vercel instead.</div>
+    </div>
+    <div class="mactions">
+      <button class="ghost-btn" onclick="clearCh()">Clear</button>
+      <button class="save-btn" onclick="saveCh()">Save key</button>
+    </div>
+  </div>
 </div>
 
 <div class="mback" id="mBack" onclick="if(event.target===this)closeModal()">
@@ -680,6 +696,14 @@ try{Object.values(DEMO_CARDS).forEach(c=>{if(c)c.image=DEMO_IMG;});}catch(e){}
 
 
 /* ---------- Card Match ---------- */
+let chKey='';
+try{ chKey=localStorage.getItem('ch_key')||''; }catch(e){}
+function chHeaders(base){ const h=Object.assign({}, base||{}); if(chKey) h['X-CH-Key']=chKey; return h; }
+function openCh(){ const i=$('chKeyInput'); if(i) i.value=chKey||''; $('chBack').classList.add('show'); setTimeout(()=>{ const i2=$('chKeyInput'); if(i2) i2.focus(); },30); }
+function closeCh(){ $('chBack').classList.remove('show'); }
+function rerunLookup(){ const cert=$('certInput')&&$('certInput').value.trim(); const ac=$('acInput')&&$('acInput').value.trim(); if(cert) matchCert(cert); else if(ac) matchAc(ac); }
+function saveCh(){ chKey=(($('chKeyInput')&&$('chKeyInput').value)||'').trim(); try{ if(chKey) localStorage.setItem('ch_key',chKey); else localStorage.removeItem('ch_key'); }catch(e){} closeCh(); toast(chKey?'Card Hedger key saved':'Key cleared'); rerunLookup(); }
+function clearCh(){ chKey=''; try{ localStorage.removeItem('ch_key'); }catch(e){} if($('chKeyInput')) $('chKeyInput').value=''; toast('Key cleared'); }
 function openImg(src){ if(!src) return; $('imgBig').src=src; $('imgBack').classList.add('show'); }
 function closeImg(){ $('imgBack').classList.remove('show'); }
 function switchView(name){
@@ -753,7 +777,7 @@ function trimmedAvg(recent){
 function renderSales(sales){
   const el=$('matchSales'); if(!el) return;
   const has = sales && sales.recent && sales.recent.length;
-  if(!has){ el.innerHTML='<div class="salehead">Recent sales</div><div class="salesempty">No sales data.<br><span>Connect Card Hedger to show comps.</span></div>'; return; }
+  if(!has){ el.innerHTML='<div class="salehead">Recent sales</div><div class="salesempty">No sales data.<br><span class="chconnect" onclick="openCh()">Add Card Hedger key</span></div>'; return; }
   const avg=trimmedAvg(sales.recent);
   const avgHtml = avg!=='' ? '<div class="saleavg"><div class="avgcol"><div class="sk">Avg sale</div><div class="avgnum">'+esc(money(avg))+'</div></div><img class="estlogo" src="'+CH_LOGO+'" alt=""></div>' : '';
   const list=(sales.recent||[]).slice(0,16).map(r=>{
@@ -822,7 +846,7 @@ async function lookup(url, q){
   showMatchState('loading', q);
   let liveOk=false;
   try{
-    const res=await fetch(url);
+    const res=await fetch(url, {headers: chHeaders()});
     if(res.ok){ liveOk=true; const data=await res.json(); if(data && data.card){ renderCard(data.card, data.source||'metabase'); return; } }
   }catch(e){}
   // Offline / not-found → fall back to bundled demo data so the layout is viewable.
@@ -856,7 +880,7 @@ function fileToDataURL(file){ return new Promise((res,rej)=>{ const r=new FileRe
 
 async function ocrViaProxy(dataURL){
   try{
-    const res=await fetch('/api/card-ocr',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image:dataURL})});
+    const res=await fetch('/api/card-ocr',{method:'POST',headers:chHeaders({'Content-Type':'application/json'}),body:JSON.stringify({image:dataURL})});
     if(!res.ok) return null;
     const d=await res.json();
     const cert=String(d.cert||d.cert_number||'').replace(/\D/g,'');
@@ -925,6 +949,8 @@ function wireOcr(){
 
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape' && $('imgBack').classList.contains('show')){ closeImg(); return; }
+  if(e.key==='Escape' && $('chBack').classList.contains('show')){ closeCh(); return; }
+  if(e.key==='Enter' && $('chBack').classList.contains('show')){ e.preventDefault(); saveCh(); return; }
   if(e.key==='Escape'){ if(modalOpen()) closeModal(); else if(!isAll()) goHome(); }
   else if(e.key==='Enter' && modalOpen()){ e.preventDefault(); saveEntry(); }
 });

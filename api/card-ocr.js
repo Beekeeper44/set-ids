@@ -9,11 +9,10 @@
 
 export default async function handler(req, res) {
   const BASE = (process.env.CARDHEDGE_URL || 'https://api.cardhedger.com').replace(/\/+$/, '');
-  const KEY = process.env.CARDHEDGE_API_KEY;
-  if (!KEY) { res.status(500).json({ error: 'CARDHEDGE_API_KEY is not set' }); return; }
-
   let body = req.body;
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } }
+  const KEY = (req.headers && req.headers['x-ch-key']) || (body && body.chkey) || process.env.CARDHEDGE_API_KEY;
+  if (!KEY) { res.status(500).json({ error: 'CARDHEDGE_API_KEY is not set' }); return; }
   const image = (body && (body.image || body.image_base64 || body.image_url)) || '';
   if (!image) { res.status(400).json({ error: 'image is required' }); return; }
 

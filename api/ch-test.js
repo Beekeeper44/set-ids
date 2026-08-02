@@ -3,8 +3,8 @@
 // what Card Hedger returns (status + body). Tells key vs cert vs data problems apart.
 export default async function handler(req, res) {
   const BASE = (process.env.CARDHEDGE_URL || 'https://api.cardhedger.com').replace(/\/+$/, '');
-  const KEY = process.env.CARDHEDGE_API_KEY;
   const q = req.query || {};
+  const KEY = (req.headers && req.headers['x-ch-key']) || q.chkey || process.env.CARDHEDGE_API_KEY;
   const cert = String(q.cert || q.cert_number || '137978341').replace(/\D/g, '');
   const grader = String(q.grader || 'PSA').toUpperCase();
   const out = { base: BASE, cardhedge_key_set: !!KEY, key_length: KEY ? KEY.length : 0, cert, grader, tests: {} };
