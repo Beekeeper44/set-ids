@@ -216,6 +216,8 @@
   .cardsrc.demo{color:#e8b84a;border-color:#5a4a1e}
   .adminlink{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--green);text-decoration:none;white-space:nowrap}
   .adminlink:hover{text-decoration:underline}
+  .backbtn{background:#0a0f0d;border:1px solid #2b3a32;border-radius:8px;color:#e7f2ec;font-family:'JetBrains Mono',monospace;font-size:11.5px;letter-spacing:.05em;padding:6px 11px;cursor:pointer}
+  .backbtn:hover{border-color:var(--green);color:#fff}
   .estrow{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
   @media(max-width:620px){.estrow{grid-template-columns:1fr}}
   .estval{background:linear-gradient(180deg,rgba(62,232,127,.10),rgba(62,232,127,.02));border:1px solid #2b3a32;border-radius:12px;padding:15px 18px;display:flex;align-items:center;justify-content:space-between;gap:14px}
@@ -886,6 +888,7 @@ function renderCard(c, source, demo){
   $('matchEmpty').hidden=true; $('matchResult').hidden=false;
   const b=$('matchBatch'); if(b) b.hidden=true;
   const isCH=source==='cardhedge';
+  const backBtn=fromBatch?'<button class="backbtn" onclick="backToBatch()">← Back to results</button>':'';
   const adminLink=c.admin_url?'<a class="adminlink" href="'+esc(c.admin_url)+'" target="_blank" rel="noopener">Link ↗</a>':'';
   const demoBadge=demo?'<span class="cardsrc demo">Demo data</span>':'';
   const img=c.image ? '<img src="'+esc(c.image)+'" alt="" onclick="openImg(this.src)"><span class="imgzoom">⤢</span>' : '<div class="noimg">no image</div>';
@@ -928,7 +931,7 @@ function renderCard(c, source, demo){
   }
   $('matchCard').innerHTML=
     '<div class="cardimg">'+img+'</div>'+
-    '<div class="cardfields"><div class="cardtop"><span class="cardsrc '+(isCH?'cardhedge':'metabase')+'">'+(isCH?'Card Hedger · fallback':'Metabase')+'</span>'+demoBadge+adminLink+'</div>'+est+rows+'</div>';
+    '<div class="cardfields"><div class="cardtop">'+backBtn+'<span class="cardsrc '+(isCH?'cardhedge':'metabase')+'">'+(isCH?'Card Hedger · fallback':'Metabase')+'</span>'+demoBadge+adminLink+'</div>'+est+rows+'</div>';
   renderSales(c.sales);
 }
 
@@ -968,12 +971,14 @@ async function doLookup(matchUrl, q){
 }
 
 async function matchAc(raw){
+  fromBatch=false;
   const ac=String(raw||'').trim();
   const el=$('acInput'); if(el) el.value=ac;
   if(!ac){ showMatchState('empty'); return; }
   doLookup('/api/card-match?ac_number='+encodeURIComponent(ac), ac);
 }
 async function matchCert(raw){
+  fromBatch=false;
   const cert=String(raw||'').replace(/\D/g,'');
   const inp=$('certInput'); if(inp) inp.value=cert;
   if(!cert){ showMatchState('empty'); return; }
@@ -982,8 +987,9 @@ async function matchCert(raw){
 }
 
 let multiMode=false;
+let fromBatch=false;
 function setMulti(on){
-  multiMode=!!on;
+  multiMode=!!on; fromBatch=false;
   $('singleInputs').hidden=multiMode;
   $('multiInputs').hidden=!multiMode;
   $('matchResult').hidden=true; $('matchBatch').hidden=true; $('matchEmpty').hidden=false;
@@ -993,10 +999,16 @@ function setMulti(on){
   setTimeout(()=>{ const el=multiMode?$('certMulti'):$('certInput'); if(el) el.focus(); },30);
 }
 function openFull(cert){
-  const t=$('multiToggle'); if(t) t.checked=false;
-  setMulti(false);
-  const c=$('certInput'); if(c) c.value=cert;
-  matchCert(cert);
+  fromBatch=true;
+  const grader=($('graderSel2')&&$('graderSel2').value)||($('graderSel')&&$('graderSel').value)||'PSA';
+  if($('graderSel')){ const o=[...$('graderSel').options].find(x=>x.value===grader); if(o) $('graderSel').value=grader; }
+  if($('certInput')) $('certInput').value=cert;
+  doLookup('/api/card-match?cert_number='+encodeURIComponent(cert)+'&grader='+encodeURIComponent(grader), cert);
+}
+function backToBatch(){
+  fromBatch=false;
+  $('matchResult').hidden=true; $('matchEmpty').hidden=true;
+  const b=$('matchBatch'); if(b) b.hidden=false;
 }
 async function fetchCompact(cert, grader){
   let card=null, source='metabase';
@@ -1023,6 +1035,7 @@ function compactHTML(card, cert){
     '</div></div>';
 }
 async function batchLookup(){
+  fromBatch=false;
   const raw=($('certMulti')&&$('certMulti').value)||'';
   const certs=[...new Set(raw.match(/\d{6,12}/g)||[])];
   const grader=($('graderSel2')&&$('graderSel2').value)||'PSA';
