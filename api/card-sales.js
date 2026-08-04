@@ -15,17 +15,23 @@ const asBool = v => { if (typeof v === 'boolean') return v; const s = norm(v); r
 const numify = v => { if (v===''||v==null) return ''; const n=Number(String(v).replace(/[^0-9.\-]/g,'')); return isNaN(n)?'':n; };
 const norm4 = d => String(d || '').slice(0, 10);
 const gradeDisplay = (c, g) => [String(c||'').trim(), String(g??'').trim()].filter(Boolean).join(' ');
+const GRADER_NAMES = { psa:'PSA', bgs:'BGS', sgc:'SGC', cgc:'CGC', csg:'CSG', hga:'HGA', arenaclub:'Arena Club' };
+const graderName = c => { const k = norm(c); return GRADER_NAMES[k] || String(c || '').toUpperCase(); };
 
 function normalizeCardFromComps(data, cert) {
   const c = data && data.card; const ci = (data && data.cert_info) || {};
   if (!c && !ci.grade) return null;
   const o = Object.assign({}, c || {});
+  const grader = ci.grader ? String(ci.grader) : '';
+  const gradeLabel = ci.grade ? String(ci.grade) : '';
+  const gradeNum = (gradeLabel.match(/[0-9.]+/) || [''])[0] || '';
   return {
     category: pick(o,'category')||'',
     ac_number: '', language: '',
     cert: String(ci.cert || cert || ''),
-    grade: '', grading_company: '',
-    grade_display: gradeDisplay('', ci.grade || ''),
+    grade: gradeNum,
+    grading_company: grader ? graderName(grader) : '',
+    grade_display: gradeLabel || (grader ? gradeDisplay(graderName(grader), gradeNum) : ''),
     set_name: pick(o,'set')||'',
     set_id: '',
     subset: pick(o,'settype')||'',

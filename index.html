@@ -807,13 +807,13 @@ function showMatchState(state, q){
 // Category-driven field order. A row shows if it's core, or (rookie & present), or has a value.
 const FIELD_DEFS=[
   ['category','Category',{core:1}],
+  ['subset','Subset'],
   ['language','Language'],
   ['cert','Cert',{mono:1,core:1}],
   ['ac_number','8AC',{mono:1}],
   ['grade_display','Grade',{mono:1,core:1}],
   ['set_name','Set Name',{core:1}],
   ['set_id','Set ID',{setid:1,core:1}],
-  ['subset','Subset'],
   ['insert','Insert',{core:1}],
   ['insert_id','Insert ID',{mono:1,core:1}],
   ['extra','Extra'],
@@ -835,6 +835,36 @@ function fillBlanks(t, s){
   ['category','language','grade','grade_display','grading_company','set_name','set_id','subset','subset_id','insert','insert_id','extra','player','card_no','variant','full_art','rarity','edition','parallel','parallel_total','image'].forEach(k=>{
     if((t[k]===''||t[k]==null) && s[k]!==''&&s[k]!=null) t[k]=s[k];
   });
+}
+function lookupSetId(card){
+  if(!card || card.set_id) return (card&&card.set_id)||'';
+  const norm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const yearOf=s=>{ const m=String(s||'').match(/\b(19|20)\d{2}\b/); return m?m[0]:''; };
+  const target=norm(card.set_name); if(!target) return '';
+  const tTokens=new Set(target.split(' ').filter(Boolean));
+  const ty=yearOf(card.set_name);
+  let bucket=''; const k=normSport(card.category||'');
+  for(const sp of SPORTS){ if(normSport(sp.name)===k){ bucket=sp.name; break; } }
+  if(!bucket && typeof SPORT_ALIASES!=='undefined' && SPORT_ALIASES[k]) bucket=SPORT_ALIASES[k];
+  const lists = (bucket && data[bucket]) ? [data[bucket]] : Object.values(data);
+  let best=null, bestKey=[-1,-1];
+  for(const list of lists){
+    for(const e of (list||[])){
+      if(!e.set_id) continue;
+      const ey=e.year||yearOf(e.set);
+      if(ty && ey && String(ey)!==ty) continue;
+      const es=norm(e.set); if(!es) continue;
+      if(es===target) return e.set_id;
+      const et=es.split(' ').filter(Boolean);
+      let overlap=0; et.forEach(t=>{ if(tTokens.has(t)) overlap++; });
+      if(overlap<2) continue;
+      const score=overlap/et.length;
+      if(score<0.75) continue;
+      const key=[score, et.length];
+      if(key[0]>bestKey[0] || (key[0]===bestKey[0] && key[1]>bestKey[1])){ bestKey=key; best=e; }
+    }
+  }
+  return best ? best.set_id : '';
 }
 async function sameCardMatch(card, extra){
   const get=k=> (card&&card[k]) || (extra&&extra[k]) || '';
@@ -983,14 +1013,20 @@ async function doLookup(matchUrl, q){
     const r2=await fetch('/api/card-sales?cert_number='+encodeURIComponent(certForCH)+'&grader='+encodeURIComponent(grader),{headers:chHeaders()});
     if(r2.ok){
       const s=await r2.json();
-      if(!card && s.card){ card=s.card; source='cardhedge'; }
-      // If our record lacks the Arena Club Set ID, find the SAME card already in the system (by player + card no.)
+      // Find the same card in OUR system — using our own identity, or (if the cert isn't in our system) Card Hedger's identity to bridge.
       let sysRow=null;
-      const needsFill = card && (!card.set_id || !card.set_name || !card.grade_display);
-      if(needsFill){ sysRow = await sameCardMatch(card, s.card); }
+      const needIdentity = !card || !card.set_id || !card.set_name || !card.grade_display;
+      if(needIdentity){ sysRow = await sameCardMatch(card||{}, s.card); }
+      if(!card){
+        if(sysRow){ card=Object.assign({}, sysRow); card.cert=certForCH||card.cert; card.ac_number=''; card.admin_url=''; card.grade=''; card.grade_display=''; card.grading_company=''; card.estimate=null; card.estimate_value=''; source='metabase'; sysRow=null; }
+        else if(s.card){ card=s.card; source='cardhedge'; }
+      }
       if(card){
-        if(sysRow) fillBlanks(card, sysRow);   // existing system record (image 1) → set name/id, insert, card no, parallel, grade, grading co.
+        // Grade belongs to THIS cert — take it from the dropped card's own record or Card Hedger, never a different copy.
+        if(s.card){ ['grade','grade_display','grading_company'].forEach(k=>{ if((card[k]===''||card[k]==null)&&s.card[k]!==''&&s.card[k]!=null) card[k]=s.card[k]; }); }
+        if(sysRow) fillBlanks(card, sysRow);   // same card in our DB → set name/id, subset(+id), insert, card no, parallel, etc.
         if(s.card) fillBlanks(card, s.card);    // Card Hedger → image + anything still blank
+        if(!card.set_id){ const sid=lookupSetId(card); if(sid) card.set_id=sid; }   // map set → Set ID from the Set IDs registry
         card.sales = s.sales||null;
         const texts=[s.ch_variant, s.ch_desc, s.ch_cert_desc];
         const fin=detectFinish([card.finish, card.variant, card.parallel].concat(texts));
