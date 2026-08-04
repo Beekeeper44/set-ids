@@ -74,6 +74,17 @@ async function chFetch(path, body, KEY, BASE) {
   return r.json();
 }
 
+function firstDetail(d){
+  if(!d) return null;
+  if(Array.isArray(d)) return d[0]||null;
+  if(Array.isArray(d.results)) return d.results[0]||null;
+  if(Array.isArray(d.data)) return d.data[0]||null;
+  if(d.cert_info||d.card) return d;
+  const vals=Object.values(d).filter(v=>v&&typeof v==='object');
+  const hit=vals.find(v=>v.cert_info||v.card);
+  return hit||null;
+}
+
 export default async function handler(req, res) {
   const BASE = (process.env.CARDHEDGE_URL || 'https://api.cardhedger.com').replace(/\/+$/, '');
   const q = req.query || {};
@@ -87,11 +98,17 @@ export default async function handler(req, res) {
 
   let comps = null;
   try { comps = await chFetch('/v1/cards/comps-by-cert', { cert_number: cert, grading_company: grader, limit: 25, offset: 0 }, KEY, BASE); } catch (e) {}
+  // No comps (no recent sales) → still identify the card so we can fill fields.
+  let detail = null;
+  if (!comps) {
+    try { detail = firstDetail(await chFetch('/v1/cards/details-by-certs', { certs: [cert], grader }, KEY, BASE)); } catch (e) {}
+  }
+  const src = comps || detail;
 
   const sales = comps ? salesFromComps(comps) : null;
-  const card = (needCard && comps) ? normalizeCardFromComps(comps, cert) : null;
-  const chCard = comps && comps.card ? comps.card : null;
-  const ci = comps && comps.cert_info ? comps.cert_info : null;
+  const card = src ? normalizeCardFromComps(src, cert) : null;   // always provide for enrichment
+  const chCard = src && src.card ? src.card : null;
+  const ci = src && src.cert_info ? src.cert_info : null;
   const ch_variant = chCard ? String(chCard.variant || '') : '';
   const ch_desc = chCard ? String(chCard.description || '') : '';
   const ch_cert_desc = ci ? String(ci.description || '') : '';

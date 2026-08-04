@@ -830,6 +830,28 @@ const FIELD_DEFS=[
   ['tag','Tag',{mono:1}]
 ];
 
+function fillBlanks(t, s){
+  if(!t||!s) return;
+  ['category','language','grade','grade_display','grading_company','set_name','set_id','subset','subset_id','insert','insert_id','extra','player','card_no','variant','full_art','rarity','edition','parallel','parallel_total','image'].forEach(k=>{
+    if((t[k]===''||t[k]==null) && s[k]!==''&&s[k]!=null) t[k]=s[k];
+  });
+}
+async function sameCardMatch(card, extra){
+  const get=k=> (card&&card[k]) || (extra&&extra[k]) || '';
+  const player=get('player'), card_no=get('card_no');
+  if(!player && !card_no) return null;
+  const base=[]; if(player) base.push(['player_name',player]); if(card_no) base.push(['card_no',card_no]);
+  const set_name=get('set_name'), insert=get('insert'), parallel=get('parallel');
+  const precise=base.slice();
+  if(set_name) precise.push(['set_name',set_name]);
+  if(insert) precise.push(['insert_name',insert]);
+  if(parallel) precise.push(['parallel_name',parallel]);
+  const tries = precise.length>base.length ? [precise, base] : [base];   // exact card first, then looser
+  for(const t of tries){
+    try{ const r=await fetch('/api/card-match?'+new URLSearchParams(t).toString(),{headers:chHeaders()}); if(r.ok){ const d=await r.json(); if(d&&d.card&&d.card.set_id) return d.card; } }catch(e){}
+  }
+  return null;
+}
 function detectEdition(cands){
   for(const s of (cands||[])){
     if(!s) continue; const t=String(s).toLowerCase();
@@ -949,15 +971,26 @@ async function doLookup(matchUrl, q){
     if(demo){ renderCard(demo,'metabase',true); return; }
   }
   if(card){ renderCard(card, source); renderSalesLoading(); }
+  // Our system first: if the record is thin but has an identity, match the same card within Metabase before Card Hedger.
+  if(card && !card.set_id && (card.player||card.card_no)){
+    const sys0=await sameCardMatch(card, null);
+    if(sys0){ fillBlanks(card, sys0); renderCard(card, source); renderSalesLoading(); }
+  }
   const certForCH = card ? String(card.cert||'').replace(/\D/g,'') : String(q).replace(/\D/g,'');
   const grader = ($('graderSel')&&$('graderSel').value)||'PSA';
   if(!certForCH){ if(card) renderSales(card.sales||null); else showMatchState('notfound', q); return; }
   try{
-    const r2=await fetch('/api/card-sales?cert_number='+encodeURIComponent(certForCH)+'&grader='+encodeURIComponent(grader)+(card?'':'&need_card=1'),{headers:chHeaders()});
+    const r2=await fetch('/api/card-sales?cert_number='+encodeURIComponent(certForCH)+'&grader='+encodeURIComponent(grader),{headers:chHeaders()});
     if(r2.ok){
       const s=await r2.json();
       if(!card && s.card){ card=s.card; source='cardhedge'; }
+      // If our record lacks the Arena Club Set ID, find the SAME card already in the system (by player + card no.)
+      let sysRow=null;
+      const needsFill = card && (!card.set_id || !card.set_name || !card.grade_display);
+      if(needsFill){ sysRow = await sameCardMatch(card, s.card); }
       if(card){
+        if(sysRow) fillBlanks(card, sysRow);   // existing system record (image 1) → set name/id, insert, card no, parallel, grade, grading co.
+        if(s.card) fillBlanks(card, s.card);    // Card Hedger → image + anything still blank
         card.sales = s.sales||null;
         const texts=[s.ch_variant, s.ch_desc, s.ch_cert_desc];
         const fin=detectFinish([card.finish, card.variant, card.parallel].concat(texts));
@@ -1015,7 +1048,7 @@ async function fetchCompact(cert, grader){
   try{ const r=await fetch('/api/card-match?cert_number='+encodeURIComponent(cert)+'&grader='+encodeURIComponent(grader),{headers:chHeaders()}); if(r.ok){ const d=await r.json(); if(d&&d.card){card=d.card;source=d.source||'metabase';} } }catch(e){}
   if(!card){ const demo=(typeof DEMO_CARDS!=='undefined')&&DEMO_CARDS[cert]; if(demo) return {card:demo,source:'metabase'}; }
   const cc=card?String(card.cert||'').replace(/\D/g,''):cert;
-  try{ const r2=await fetch('/api/card-sales?cert_number='+encodeURIComponent(cc)+'&grader='+encodeURIComponent(grader)+(card?'':'&need_card=1'),{headers:chHeaders()}); if(r2.ok){ const s=await r2.json(); if(!card&&s.card){card=s.card;source='cardhedge';} if(card){ card.sales=s.sales||null; } } }catch(e){}
+  try{ const r2=await fetch('/api/card-sales?cert_number='+encodeURIComponent(cc)+'&grader='+encodeURIComponent(grader),{headers:chHeaders()}); if(r2.ok){ const s=await r2.json(); if(!card&&s.card){card=s.card;source='cardhedge';} else if(card&&s.card){ fillBlanks(card,s.card); } if(card){ card.sales=s.sales||null; } } }catch(e){}
   return {card,source};
 }
 function compactHTML(card, cert){

@@ -32,6 +32,7 @@ function normalizeCard(o, certFallback) {
     grade_display: gradeDisplay(company?graderName(company):'', grade),
     set_name: pick(o,'setname','set')||'',
     set_id: pick(o,'setid')||'',
+    subset_id: pick(o,'subsetid')||'',
     subset: pick(o,'subset','settype')||'',
     insert: pick(o,'insertname','insert')||'',
     insert_id: pick(o,'insertid')||'',
@@ -87,20 +88,35 @@ export default async function handler(req, res) {
   const q = req.query || {};
   const cert = String(q.cert_number || q.cert || '').replace(/\D/g, '');
   const ac = String(q.ac_number || q.ac || '').trim();
-  if (!cert && !ac) { res.status(400).json({ error: 'cert_number or ac_number is required' }); return; }
+  const IDK = ['player_name', 'card_no', 'grade', 'grading_company', 'set_name', 'insert_name', 'parallel_name'];
+  const idFilters = {};
+  IDK.forEach(k => { if (q[k] != null && String(q[k]).trim() !== '') idFilters[k] = String(q[k]).trim(); });
+
+  let filters = null;
+  if (cert) filters = { cert_number: cert };
+  else if (ac) filters = { ac_number: ac };
+  else if (Object.keys(idFilters).length) filters = idFilters;
+  if (!filters) { res.status(400).json({ error: 'cert_number, ac_number, or identity params required' }); return; }
   if (!KEY) { res.status(500).json({ error: 'METABASE_API_KEY is not set' }); return; }
 
   res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=120');
+  const nonEmpty = r => Object.values(r || {}).filter(v => v != null && String(v).trim() !== '').length;
   try {
-    const filters = cert ? { cert_number: cert } : { ac_number: ac };
     const rows = await queryMetabase(BASE, KEY, CARD, filters);
     if (rows.length) {
-      const card = normalizeCard(rows[0], cert);
+      // When a cert/8AC matches several rows (e.g. component + main), use the most-populated one.
+      const row = rows.length > 1 ? rows.slice().sort((a, b) => nonEmpty(b) - nonEmpty(a))[0] : rows[0];
+      const card = normalizeCard(row, cert);
       const mbVal = numify(card.estimate_value);
       card.estimate = mbVal !== '' ? { value: mbVal, low: '', high: '', confidence: '', method: 'metabase' } : null;
-      res.status(200).json({ source: 'metabase', card });
+      const out = { source: 'metabase', card };
+      if (q.debug) out.debug = { row_count: rows.length, chosen_nonempty: nonEmpty(row), raw_keys: Object.keys(row || {}), raw_row: row };
+      res.status(200).json(out);
       return;
     }
-  } catch (e) {}
+    if (q.debug) { res.status(200).json({ source: 'none', debug: { row_count: 0, filters } }); return; }
+  } catch (e) {
+    if (q.debug) { res.status(200).json({ source: 'error', debug: { error: String(e).slice(0, 300) } }); return; }
+  }
   res.status(200).json({ source: 'none' });
 }
