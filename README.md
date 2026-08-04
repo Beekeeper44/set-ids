@@ -145,6 +145,22 @@ is no cert to price against until the card has a third-party cert. If you want c
 the endpoint needed is an identity search (player + set + card no + grade) rather than
 `comps-by-cert` — Card Hedger's cert endpoints can't do it.
 
+## Card images
+Order of preference: our own record's picture (`front_slab_picture_url` and friends), then a
+sibling copy via the resolution cascade, then Card Hedger.
+
+Card Hedger's image was previously missed because `card-sales.js` only looked for a key named
+exactly `image`, while the Metabase side checked ten spellings. `pickImage()` now checks the
+known spellings, digs into nested containers (`images: {front: …}`) and arrays, and as a last
+resort takes any image-ish key holding a URL. Values that aren't URLs are ignored, so a literal
+"none" doesn't become a broken `<img>`.
+
+If comps come back without a picture, one extra call to `details-by-certs` tries again — only
+when the panel would otherwise show the "no image" placeholder.
+
+Still no image? Hit `/api/card-sales?cert_number=…&grader=PSA&debug=1` — the `debug` block lists
+the exact keys Card Hedger returned, so a new spelling can be added to `IMAGE_KEYS`.
+
 ## Other panel behaviour
 - Values are shown exactly as the source supplies them. `polishCard()` only fills blanks — a
   missing Set ID, and a missing Parallel — and never rewrites a value Metabase returned.

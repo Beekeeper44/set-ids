@@ -14,6 +14,43 @@ const pick = (o, ...targets) => {
 const asBool = v => { if (typeof v === 'boolean') return v; const s = norm(v); return s==='true'||s==='t'||s==='y'||s==='yes'||s==='1'||s==='rookie'; };
 const numify = v => { if (v===''||v==null) return ''; const n=Number(String(v).replace(/[^0-9.\-]/g,'')); return isNaN(n)?'':n; };
 const norm4 = d => String(d || '').slice(0, 10);
+
+// Card Hedger doesn't guarantee a key named "image" — it may be image_url, front_image, a
+// nested object, or a list. Check the known spellings, then any key that looks image-ish
+// whose value is a URL, rather than silently returning no picture.
+const IMAGE_KEYS = ['image','images','imageurl','imageurls','imageurlfront','frontimage','frontimageurl','imagefront',
+  'cardimage','cardimageurl','frontslabpictureurl','slabpictureurl','slabimage','slabimageurl',
+  'frontpictureurl','pictureurl','pictures','picture','photo','photos','photourl','img','imgurl','thumbnail','thumburl'];
+const looksLikeUrl = v => typeof v === 'string' && /^(https?:)?\/\//i.test(v.trim());
+function pickImage(o, depth) {
+  if (!o || typeof o !== 'object') return '';
+  const d = depth || 0;
+  const keys = Object.keys(o);
+  for (const t of IMAGE_KEYS) {
+    const k = keys.find(k => norm(k) === t);
+    if (k === undefined) continue;
+    const v = o[k];
+    if (looksLikeUrl(v)) return v.trim();
+    if (Array.isArray(v)) {
+      const hit = v.find(looksLikeUrl);
+      if (hit) return hit.trim();
+      if (d < 2) for (const el of v) { const n = pickImage(el, d + 1); if (n) return n; }
+    } else if (v && typeof v === 'object' && d < 2) {
+      const n = pickImage(v, d + 1); if (n) return n;
+    }
+  }
+  // Anything image-ish left: a URL directly, or a container to dig into.
+  for (const k of keys) {
+    if (!/(image|photo|picture|img|thumb|scan)/.test(norm(k))) continue;
+    const v = o[k];
+    if (looksLikeUrl(v)) return String(v).trim();
+    if (Array.isArray(v)) { const hit = v.find(looksLikeUrl); if (hit) return hit.trim(); }
+    if (v && typeof v === 'object' && d < 2) { const n = pickImage(v, d + 1); if (n) return n; }
+  }
+  // Inside a container we already judged image-ish (images: {front: "..."}), any URL will do.
+  if (d > 0) for (const k of keys) { if (looksLikeUrl(o[k])) return String(o[k]).trim(); }
+  return '';
+}
 const gradeDisplay = (c, g) => [String(c||'').trim(), String(g??'').trim()].filter(Boolean).join(' ');
 const GRADER_NAMES = { psa:'PSA', bgs:'BGS', sgc:'SGC', cgc:'CGC', csg:'CSG', hga:'HGA', arenaclub:'Arena Club' };
 const graderName = c => { const k = norm(c); return GRADER_NAMES[k] || String(c || '').toUpperCase(); };
@@ -21,8 +58,7 @@ const graderName = c => { const k = norm(c); return GRADER_NAMES[k] || String(c 
 function normalizeCardFromComps(data, cert) {
   const c = data && data.card; const ci = (data && data.cert_info) || {};
   if (!c && !ci.grade) return null;
-  const o = Object.assign({}, c || {});
-  const grader = ci.grader ? String(ci.grader) : '';
+  const o = Object.assign({}, c || {});  const grader = ci.grader ? String(ci.grader) : '';
   const gradeLabel = ci.grade ? String(ci.grade) : '';
   const gradeNum = (gradeLabel.match(/[0-9.]+/) || [''])[0] || '';
   return {
@@ -44,7 +80,7 @@ function normalizeCardFromComps(data, cert) {
     full_art: '', rarity: '', edition: '',
     parallel: '', parallel_total: '', tag: '', admin_url: '',
     estimate_value: '',
-    image: pick(o,'image')||''
+    image: pickImage(o) || pickImage(ci) || pickImage(data) || ''
   };
 }
 
@@ -113,11 +149,34 @@ export default async function handler(req, res) {
 
   const sales = comps ? salesFromComps(comps) : null;
   const card = src ? normalizeCardFromComps(src, cert) : null;   // always provide for enrichment
+
+  // Comps answered but carried no picture — details-by-certs often has one. Only worth the
+  // extra call when we'd otherwise show the "no image" placeholder.
+  if (card && !card.image && comps) {
+    try {
+      const d2 = firstDetail(await chFetch('/v1/cards/details-by-certs', { certs: [cert], grader }, KEY, BASE));
+      if (d2) {
+        const img = pickImage(d2.card) || pickImage(d2.cert_info) || pickImage(d2);
+        if (img) card.image = img;
+      }
+    } catch (e) {}
+  }
+
   const chCard = src && src.card ? src.card : null;
   const ci = src && src.cert_info ? src.cert_info : null;
   const ch_variant = chCard ? String(chCard.variant || '') : '';
   const ch_desc = chCard ? String(chCard.description || '') : '';
   const ch_cert_desc = ci ? String(ci.description || '') : '';
 
-  res.status(200).json({ sales, estimate: null, card, ch_variant, ch_desc, ch_cert_desc });
+  const out = { sales, estimate: null, card, ch_variant, ch_desc, ch_cert_desc };
+  // ?debug=1 → see exactly what Card Hedger sent, so a missed image key can be added above.
+  if (q.debug) {
+    out.debug = {
+      image_found: card ? card.image : '',
+      card_keys: chCard ? Object.keys(chCard) : [],
+      cert_info_keys: ci ? Object.keys(ci) : [],
+      top_keys: src ? Object.keys(src) : []
+    };
+  }
+  res.status(200).json(out);
 }
