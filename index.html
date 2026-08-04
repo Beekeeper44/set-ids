@@ -950,6 +950,30 @@ function imgFail(el, cls){
   wrap.innerHTML = cls==='cnoimg' ? '<div class="cnoimg">—</div>' : '<div class="noimg">no image</div>';
 }
 
+// Record where a picture came from, so a wrong image is instantly attributable.
+const IMAGE_SOURCE_LABEL = { metabase:'Arena Club record', sibling:'another copy in our database', cardhedger:'Card Hedger' };
+function noteImage(c, hadImage, src){
+  if(!hadImage && c && c.image) c.image_source = src;
+  return !!(c && c.image);
+}
+
+// Our own scan is only trusted when the record can vouch for this cert. A grade or company that
+// disagrees with what Card Hedger read off the cert means the row describes a different slab,
+// and a stub with no grade and no identity of its own can't vouch for anything — in both cases
+// Card Hedger's picture is the better bet.
+function ownImageTrusted(row, ch){
+  if(!row || !row.image) return false;
+  if(!ch) return true;
+  if(hasRealGrade(row) && hasRealGrade(ch)){
+    const a=String(row.grade).replace(/[^0-9.]/g,''), b=String(ch.grade).replace(/[^0-9.]/g,'');
+    if(a!==b) return false;
+    const ca=normSport(row.grading_company||''), cb=normSport(ch.grading_company||'');
+    if(ca && cb && ca!==cb && CH_GRADER_ALIASES[ca]!==CH_GRADER_ALIASES[cb]) return false;
+  }
+  if(!hasRealGrade(row) && !row.player && !row.card_no) return false;
+  return true;
+}
+
 // Card Hedger indexes certs per grading company, and 8-digit cert numbers collide
 // across graders — PSA 92229842 and Arena Club 92229842 are different cards. So the
 // record's own grading company decides the lookup, and an Arena Club cert (which only
@@ -1003,6 +1027,33 @@ function sameCard(a, b){
   if(ay && by && ay!==by) return false;
   return true;
 }
+// Choose among sibling copies the cert lookup already returned. Same company + same grade is
+// tier 2. Otherwise tier 3 takes the copy whose grade is *closest* to ours rather than the
+// dearest one, so a PSA 9 doesn't inherit the top PSA 10 price in the vault.
+function pickSibling(siblings, company, grade){
+  if(!siblings || !siblings.length) return {tier:0, row:null};
+  const co = s => normSport(s||'');
+  const gn = v => parseFloat(String(v==null?'':v).replace(/[^0-9.]/g,''));
+  const hasVal = r => r.estimate && r.estimate.value!==''&&r.estimate.value!=null;
+  const target = gn(grade);
+  if(co(company) && isFinite(target)){
+    // Same slab class. Prefer one that actually carries a value over an empty twin.
+    const exacts = siblings.filter(r => co(r.grading_company)===co(company) && gn(r.grade)===target);
+    if(exacts.length) return {tier:2, row: exacts.find(hasVal) || exacts[0]};
+  }
+  const pool = siblings.filter(hasVal);
+  if(!pool.length) return {tier:3, row:siblings[0]};
+  if(!isFinite(target)) return {tier:3, row:pool[0]};
+  // Same grading company first — comparing within one grading scale beats hopping to another —
+  // then the closest grade, so a PSA 9 doesn't inherit the dearest PSA 10 in the vault.
+  const ranked = pool.map(r => ({
+    r,
+    sameCo: co(r.grading_company)===co(company) ? 0 : 1,
+    d: isFinite(gn(r.grade)) ? Math.abs(gn(r.grade)-target) : 99
+  })).sort((a,b)=> a.sameCo-b.sameCo || a.d-b.d);
+  return {tier:3, row:ranked[0].r};
+}
+
 async function mbLookup(params){
   try{
     const r=await fetch('/api/card-match?'+new URLSearchParams(params).toString(),{headers:chHeaders()});
@@ -1030,7 +1081,14 @@ async function resolveFromSystem(card, extra){
   if(parallel) precise.push(['parallel_name',parallel]);
   const tries = precise.length>base.length ? [precise, base] : [base];   // exact card first, then looser
 
-  const company=get('grading_company'), grade=get('grade');
+  // Tier 2 needs a *real* grade to search on. A stub record ("Arena Club 0") has none, so
+  // fall back to the grade and company Card Hedger read off the actual cert — otherwise the
+  // query looks for other ungraded stubs and misses the copies holding the image and value.
+  const ownGrade = hasRealGrade(card);
+  const company = (ownGrade && card && card.grading_company) ? card.grading_company
+                : (extra && extra.grading_company) || '';
+  const grade   = ownGrade ? card.grade
+                : (extra && hasRealGrade(extra) ? extra.grade : '');
   if(company && String(grade)!==''){
     for(const t of tries){
       const row=await mbLookup(t.concat([['grading_company',company],['grade',grade]]));
@@ -1044,24 +1102,35 @@ async function resolveFromSystem(card, extra){
   return {tier:0, row:null};
 }
 
-// Adopt a sibling copy's data. 8AC and the admin link identify a different physical item,
-// so they're dropped rather than pointed at the wrong record.
-function adoptSibling(card, row, tier, cert){
+// What a sibling is allowed to contribute. A different-grade copy must not supply grade,
+// company, or the slab photo — the label in that photo shows the other card's cert and grade.
+function siblingSrc(row, tier){
+  return tier===2 ? row : Object.assign({}, row, {grade:'',grade_display:'',grading_company:'',image:''});
+}
+
+// Adopt a sibling copy's data. When the cert itself matched our system (keepIdentity), the
+// record keeps its own cert / 8AC / admin link and the sibling only contributes what's missing —
+// notably the est. value, which fillBlanks() doesn't carry. Otherwise those identity fields are
+// dropped rather than pointed at a different physical item.
+function adoptSibling(card, row, tier, cert, keepIdentity){
   if(!row) return card;
   const c = card || {};
-  // A different-grade copy must never supply grade or company — that belongs to this slab.
-  const src = tier===2 ? row : Object.assign({}, row, {grade:'',grade_display:'',grading_company:''});
-  fillBlanks(c, src);
-  if(tier===2){
-    ['grade','grade_display','grading_company'].forEach(k=>{ if(c[k]===''||c[k]==null) c[k]=row[k]; });
+  fillBlanks(c, siblingSrc(row, tier));
+  if(tier===2 && !hasRealGrade(c)){
+    ['grade','grade_display','grading_company'].forEach(k=>{ if(row[k]!==''&&row[k]!=null) c[k]=row[k]; });
   }
   if((c.estimate_value===''||c.estimate_value==null) && row.estimate_value!==''&&row.estimate_value!=null){
     c.estimate_value=row.estimate_value;
   }
-  if(!c.estimate && row.estimate){ c.estimate=row.estimate; c.estimate_from='sibling'; c.estimate_tier=tier; }
-  if(cert) c.cert=cert;
-  c.ac_number=''; c.admin_url='';
-  c.match_tier=tier;
+  if(!c.estimate && row.estimate){
+    c.estimate=row.estimate; c.estimate_from='sibling'; c.estimate_tier=tier;
+    c.estimate_grade=row.grade_display||'';
+  }
+  if(!keepIdentity){
+    if(cert) c.cert=cert;        // the cert you searched stays the cert on screen
+    c.ac_number=''; c.admin_url='';
+    c.match_tier=tier;
+  }
   return c;
 }
 function detectEdition(cands){
@@ -1127,7 +1196,8 @@ function renderCard(c, source, demo){
   const backBtn=fromBatch?'<button class="backbtn" onclick="backToBatch()">← Back to results</button>':'';
   const adminLink=c.admin_url?'<a class="adminlink" href="'+esc(c.admin_url)+'" target="_blank" rel="noopener">Link ↗</a>':'';
   const demoBadge=demo?'<span class="cardsrc demo">Demo data</span>':'';
-  const img=c.image ? '<img src="'+esc(c.image)+'" alt="" onclick="openImg(this.src)" onerror="imgFail(this)"><span class="imgzoom">⤢</span>' : '<div class="noimg">no image</div>';
+  const imgTitle = c.image_source ? ('Image from '+(IMAGE_SOURCE_LABEL[c.image_source]||c.image_source)+' — click to enlarge') : 'Click to enlarge';
+  const img=c.image ? '<img src="'+esc(c.image)+'" alt="" title="'+esc(imgTitle)+'" onclick="openImg(this.src)" onerror="imgFail(this)"><span class="imgzoom">⤢</span>' : '<div class="noimg">no image</div>';
   let rows='';
   FIELD_DEFS.forEach(def=>{
     const key=def[0], label=def[1], o=def[2]||{};
@@ -1150,7 +1220,8 @@ function renderCard(c, source, demo){
   // Est. Value — always Arena Club (green). Shows the Metabase value, or "No Est Value".
   const mbVal = (c.estimate && c.estimate.method==='metabase' && c.estimate.value!==''&&c.estimate.value!=null) ? c.estimate.value : '';
   const estSub = 'Arena Club' + (c.estimate_from==='sibling'
-    ? (c.estimate_tier===2 ? ' · same grade, other cert' : ' · other copy')
+    ? (c.estimate_tier===2 ? ' · same grade, other cert'
+                           : ' · from '+(c.estimate_grade||'another')+' copy')
     : '');
   if(mbVal!=='') boxes.push({label:'Est. Value', val:money(mbVal), sub:estSub, logo:AC_LOGO});
   else boxes.push({label:'Est. Value', val:'No Est Value', sub:'Arena Club', logo:AC_LOGO, small:true});
@@ -1178,16 +1249,17 @@ function renderSalesLoading(){ const el=$('matchSales'); if(el) el.innerHTML='<d
 
 async function doLookup(matchUrl, q){
   showMatchState('loading', q);
-  let card=null, source='metabase';
+  let card=null, source='metabase', siblings=[];
   try{
     const r=await fetch(matchUrl,{headers:chHeaders()});
-    if(r.ok){ const d=await r.json(); if(d && d.card){ card=d.card; source=d.source||'metabase'; } }
+    if(r.ok){ const d=await r.json(); if(d && d.card){ card=d.card; source=d.source||'metabase'; siblings=(d.siblings||[]); } }
   }catch(e){}
   if(!card){
     const demo=(typeof DEMO_CARDS!=='undefined') && (DEMO_CARDS[q] || DEMO_CARDS[String(q).replace(/\D/g,'')]);
     if(demo){ renderCard(demo,'metabase',true); return; }
   }
-  if(card){ card.match_tier=1; renderCard(card, source); renderSalesLoading(); }
+  const ownRow = card ? Object.assign({}, card) : null;   // as it arrived, before enrichment
+  if(card){ card.match_tier=1; if(card.image) card.image_source='metabase'; renderCard(card, source); renderSalesLoading(); }
   const certForCH = card ? String(card.cert||'').replace(/\D/g,'') : String(q).replace(/\D/g,'');
   const grader = chGraderFor(card, $('graderSel')&&$('graderSel').value);
   if(!certForCH){ if(card) renderSales(card.sales||null); else showMatchState('notfound', q); return; }
@@ -1211,7 +1283,13 @@ async function doLookup(matchUrl, q){
       let resolved={tier:0,row:null};
       const needIdentity = !card || !card.set_id || !card.set_name || !card.grade_display ||
                            card.estimate_value===''||card.estimate_value==null || !card.image;
-      if(needIdentity) resolved = await resolveFromSystem(card||{}, s.card);
+      if(needIdentity){
+        // Sibling copies came back with the cert lookup, so use them before spending queries.
+        const co = (card && hasRealGrade(card) && card.grading_company) || (s.card && s.card.grading_company) || '';
+        const gr = (card && hasRealGrade(card)) ? card.grade : (s.card && hasRealGrade(s.card) ? s.card.grade : '');
+        resolved = pickSibling(siblings, co, gr);
+        if(!resolved.row) resolved = await resolveFromSystem(card||{}, s.card);
+      }
 
       if(!card){
         if(resolved.row){
@@ -1233,9 +1311,17 @@ async function doLookup(matchUrl, q){
             ['grade','grade_display','grading_company'].forEach(k=>{ if((card[k]===''||card[k]==null)&&s.card[k]!==''&&s.card[k]!=null) card[k]=s.card[k]; });
           }
         }
-        if(resolved.row && card.match_tier===1) fillBlanks(card, resolved.row);   // tier 1 wins; sibling only fills gaps
-        else if(resolved.row) adoptSibling(card, resolved.row, resolved.tier, card.cert);
+        // Our scan only stands if the record vouches for this cert's grade; otherwise
+        // Card Hedger's image replaces it rather than showing another card's slab.
+        if(s.card && s.card.image && !ownImageTrusted(ownRow, s.card)){
+          card.image=''; card.image_source='';
+        }
+        let hadImg = !!card.image;
+        // tier 1 keeps its own cert/8AC/link; either way the sibling fills what's missing
+        if(resolved.row) adoptSibling(card, resolved.row, resolved.tier, card.cert, card.match_tier===1);
+        hadImg = noteImage(card, hadImg, 'sibling');
         if(s.card) fillBlanks(card, s.card);    // Card Hedger → image + anything still blank
+        noteImage(card, hadImg, 'cardhedger');
         polishCard(card);   // map set → Set ID from the registry
         card.sales = s.sales||null;
         card.sales_note = chMismatch

@@ -55,6 +55,60 @@ function normalizeCard(o, certFallback) {
   };
 }
 
+// The saved question returns rows with a null cert alongside the real match, so the filter can't
+// be assumed to have held. Verify each filter against the row before trusting it — otherwise the
+// "most-populated row" tie-break below happily picks an unrelated row that has more columns filled.
+const FILTER_COLS = {
+  cert_number:     ['certnumber','cert','certno'],
+  ac_number:       ['acnumber','ac','8ac'],
+  player_name:     ['playername','player','character','subject'],
+  card_no:         ['cardno','cardnumber','number'],
+  grade:           ['grade'],
+  grading_company: ['gradingcompany','grader','gradecompany','company'],
+  set_name:        ['setname','set'],
+  insert_name:     ['insertname','insert'],
+  parallel_name:   ['parallelname','parallel']
+};
+// Identifier comparison has to survive formatting differences: the "8AC" prefix (whose 8 is a
+// digit), and leading zeros that vanish if Metabase stores the column as a number.
+const idKey = v => String(v == null ? '' : v).replace(/^\s*8ac/i, '').replace(/\D/g, '').replace(/^0+/, '');
+const hasCol = (o, cols) => Object.keys(o || {}).some(k => cols.indexOf(norm(k)) >= 0);
+function rowMatchesFilters(row, filters) {
+  for (const slug of Object.keys(filters || {})) {
+    const cols = FILTER_COLS[slug];
+    if (!cols || !hasCol(row, cols)) continue;   // can't verify this one — don't reject on it
+    const got = pick(row, ...cols);
+    const want = filters[slug];
+    if (slug === 'cert_number' || slug === 'ac_number') {
+      if (idKey(got) === '' || idKey(got) !== idKey(want)) return false;
+    } else if (slug === 'grade') {
+      const a = parseFloat(String(got).replace(/[^0-9.]/g, ''));
+      const b = parseFloat(String(want).replace(/[^0-9.]/g, ''));
+      if (!(isFinite(a) && isFinite(b) && a === b)) return false;
+    } else {
+      if (norm(got) === '' || norm(got) !== norm(want)) return false;
+    }
+  }
+  return true;
+}
+
+
+// Rows sharing a subset_id are copies of the same card — each with its own cert, grade and
+// est. value. card_id identifies the physical copy; subset_id identifies the card itself.
+// So the response to a cert lookup already carries every sibling copy; no extra query needed.
+function sameSku(a, b) {
+  const sa = norm(pick(a, 'subsetid')), sb = norm(pick(b, 'subsetid'));
+  if (sa && sb) return sa === sb;
+  const key = r => [
+    norm(pick(r, 'playername', 'player')),
+    norm(pick(r, 'cardno', 'cardnumber', 'number')),
+    norm(pick(r, 'setname', 'set')),
+    norm(pick(r, 'parallelname', 'parallel'))
+  ].join('|');
+  const ka = key(a);
+  return ka === key(b) && ka.replace(/\|/g, '') !== '';   // never treat two blank rows as siblings
+}
+
 let metaCache = null;
 async function metabaseParams(BASE, KEY, CARD) {
   if (metaCache) return metaCache;
@@ -103,18 +157,34 @@ export default async function handler(req, res) {
   const nonEmpty = r => Object.values(r || {}).filter(v => v != null && String(v).trim() !== '').length;
   try {
     const rows = await queryMetabase(BASE, KEY, CARD, filters);
-    if (rows.length) {
+    // Keep only rows the filter genuinely matched. Without this, a cert lookup that returns
+    // 40 null-cert rows lets an unrelated row win the most-populated tie-break below — which
+    // is how another card's 8AC and slab scan end up on screen.
+    const matched = rows.filter(r => rowMatchesFilters(r, filters));
+    if (matched.length) {
       // When a cert/8AC matches several rows (e.g. component + main), use the most-populated one.
-      const row = rows.length > 1 ? rows.slice().sort((a, b) => nonEmpty(b) - nonEmpty(a))[0] : rows[0];
+      const row = matched.length > 1 ? matched.slice().sort((a, b) => nonEmpty(b) - nonEmpty(a))[0] : matched[0];
       const card = normalizeCard(row, cert);
       const mbVal = numify(card.estimate_value);
       card.estimate = mbVal !== '' ? { value: mbVal, low: '', high: '', confidence: '', method: 'metabase' } : null;
-      const out = { source: 'metabase', card };
-      if (q.debug) out.debug = { row_count: rows.length, chosen_nonempty: nonEmpty(row), raw_keys: Object.keys(row || {}), raw_row: row };
+
+      // Other copies of the same card, already in this response — the est. value and image the
+      // matched row is missing usually live here.
+      const siblings = rows
+        .filter(r => r !== row && sameSku(row, r))
+        .map(r => {
+          const s = normalizeCard(r, '');
+          const v = numify(s.estimate_value);
+          s.estimate = v !== '' ? { value: v, low: '', high: '', confidence: '', method: 'metabase' } : null;
+          return s;
+        });
+
+      const out = { source: 'metabase', card, siblings };
+      if (q.debug) out.debug = { row_count: rows.length, matched_count: matched.length, discarded: rows.length - matched.length, sibling_count: siblings.length, chosen_nonempty: nonEmpty(row), raw_keys: Object.keys(row || {}), raw_row: row };
       res.status(200).json(out);
       return;
     }
-    if (q.debug) { res.status(200).json({ source: 'none', debug: { row_count: 0, filters } }); return; }
+    if (q.debug) { res.status(200).json({ source: 'none', debug: { row_count: rows.length, matched_count: 0, discarded: rows.length, filters, sample_row: rows[0] || null } }); return; }
   } catch (e) {
     if (q.debug) { res.status(200).json({ source: 'error', debug: { error: String(e).slice(0, 300) } }); return; }
   }

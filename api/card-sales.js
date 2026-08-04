@@ -55,24 +55,46 @@ const gradeDisplay = (c, g) => [String(c||'').trim(), String(g??'').trim()].filt
 const GRADER_NAMES = { psa:'PSA', bgs:'BGS', sgc:'SGC', cgc:'CGC', csg:'CSG', hga:'HGA', arenaclub:'Arena Club' };
 const graderName = c => { const k = norm(c); return GRADER_NAMES[k] || String(c || '').toUpperCase(); };
 
+// Card Hedger frequently returns player/set/category as null while spelling the same facts
+// out in the description:  card.description = "Garrett Wilson 2022 Panini Prizm Football".
+// Split at the year: what precedes it is the player, the rest is the set. A description that
+// starts with the year (the cert_info style, "2022 Panini Prizm Garrett Wilson Autograph 309")
+// interleaves the two, so nothing is taken from it rather than guessing wrong.
+const CATEGORY_WORDS = ['football','basketball','baseball','hockey','soccer','golf','tennis','boxing',
+  'wrestling','racing','pokemon','digimon','marvel','disney'];
+function splitDescription(desc) {
+  const t = String(desc || '').replace(/\s+/g, ' ').trim();
+  if (!t) return { player: '', set_name: '', category: '' };
+  const m = t.match(/^(.*?)\s+((?:19|20)\d{2}(?:\s*-\s*\d{2})?\b.*)$/);
+  if (!m || !m[1]) return { player: '', set_name: '', category: '' };
+  const set_name = m[2].trim();
+  const last = (set_name.split(' ').pop() || '').toLowerCase();
+  return {
+    player: m[1].trim(),
+    set_name,
+    category: CATEGORY_WORDS.indexOf(last) >= 0 ? last : ''
+  };
+}
+
 function normalizeCardFromComps(data, cert) {
   const c = data && data.card; const ci = (data && data.cert_info) || {};
   if (!c && !ci.grade) return null;
-  const o = Object.assign({}, c || {});  const grader = ci.grader ? String(ci.grader) : '';
+  const o = Object.assign({}, c || {});
+  const desc = splitDescription(pick(o, 'description'));  const grader = ci.grader ? String(ci.grader) : '';
   const gradeLabel = ci.grade ? String(ci.grade) : '';
   const gradeNum = (gradeLabel.match(/[0-9.]+/) || [''])[0] || '';
   return {
-    category: pick(o,'category')||'',
+    category: pick(o,'category') || desc.category || '',
     ac_number: '', language: '',
     cert: String(ci.cert || cert || ''),
     grade: gradeNum,
     grading_company: grader ? graderName(grader) : '',
     grade_display: gradeLabel || (grader ? gradeDisplay(graderName(grader), gradeNum) : ''),
-    set_name: pick(o,'set')||'',
+    set_name: pick(o,'set') || desc.set_name || '',
     set_id: '',
     subset: pick(o,'settype')||'',
     insert: '', insert_id: '', extra: '',
-    player: pick(o,'player')||'',
+    player: pick(o,'player') || desc.player || '',
     card_no: pick(o,'number')||'',
     has_rookie: Object.keys(o).some(k=>norm(k)==='rookie'),
     rookie: asBool(pick(o,'rookie')),
