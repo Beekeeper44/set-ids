@@ -804,7 +804,8 @@ function showMatchState(state, q){
   else empty.innerHTML='<div class="me-big">◎</div><div>Scan or type a cert or 8AC, or drop a label image to look up a card.</div>';
 }
 
-// Category-driven field order. A row shows if it's core, or (rookie & present), or has a value.
+// Row order and which rows hold their place when empty. A row shows if it's core,
+// or (rookie & present), or has a value. Core rows render "—" when the source is blank.
 const FIELD_DEFS=[
   ['category','Category',{core:1}],
   ['subset','Subset'],
@@ -836,40 +837,191 @@ function fillBlanks(t, s){
     if((t[k]===''||t[k]==null) && s[k]!==''&&s[k]!=null) t[k]=s[k];
   });
 }
+// Metabase gives set names like "2025 Panini Mosaic Football"; the registry stores
+// them split up (set "Mosaic", brand "Panini", year 2025). So compare on tokens with
+// the year stripped, and require the registry name to be fully contained in the card's.
+// Only true filler. "Series" and "Edition" are load-bearing here — they're what
+// separates "Panini Elite Series" from "Panini Elite".
+const SET_STOPWORDS = new Set(['the','and','of','cards','card']);
+const yearOf = s => { const m=String(s||'').match(/\b(19|20)\d{2}\b/); return m?m[0]:''; };
+// "2023-24 Panini Prizm" → "2023-24" so the derived ID keeps the full season.
+const seasonOf = s => {
+  const t=String(s||'');
+  const m=t.match(/\b((19|20)\d{2})\s*[-/]\s*(\d{2,4})\b/);
+  return m ? (m[1]+'-'+m[3]) : yearOf(t);
+};
+function setTokens(s){
+  return String(s||'')
+    .toLowerCase()
+    .replace(/\b(19|20)\d{2}\s*[-/]\s*\d{2}\b/g,' ')   // 2023-24
+    .replace(/\b(19|20)\d{2}\b/g,' ')                  // 2025
+    .replace(/[^a-z0-9]+/g,' ')
+    .trim().split(' ')
+    .filter(t => t && !SET_STOPWORDS.has(t));
+}
 function lookupSetId(card){
-  if(!card || card.set_id) return (card&&card.set_id)||'';
-  const norm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-  const yearOf=s=>{ const m=String(s||'').match(/\b(19|20)\d{2}\b/); return m?m[0]:''; };
-  const target=norm(card.set_name); if(!target) return '';
-  const tTokens=new Set(target.split(' ').filter(Boolean));
-  const ty=yearOf(card.set_name);
+  if(!card) return '';
+  if(card.set_id) return card.set_id;
+  const target = setTokens(card.set_name);
+  if(!target.length) return '';
+  const tSet = new Set(target);
+  const ty = yearOf(card.set_name);
+  const tseason = seasonOf(card.set_name);
+  const catTokens = setTokens(card.category);
+  const langTokens = setTokens(card.language);
+  const targetCore = target.filter(t => !catTokens.includes(t)).join(' ');
+
+  // Prefer the registry bucket for this category; fall back to every bucket.
   let bucket=''; const k=normSport(card.category||'');
   for(const sp of SPORTS){ if(normSport(sp.name)===k){ bucket=sp.name; break; } }
   if(!bucket && typeof SPORT_ALIASES!=='undefined' && SPORT_ALIASES[k]) bucket=SPORT_ALIASES[k];
-  const lists = (bucket && data[bucket]) ? [data[bucket]] : Object.values(data);
-  let best=null, bestKey=[-1,-1];
-  for(const list of lists){
-    for(const e of (list||[])){
-      if(!e.set_id) continue;
-      const ey=e.year||yearOf(e.set);
-      if(ty && ey && String(ey)!==ty) continue;
-      const es=norm(e.set); if(!es) continue;
-      if(es===target) return e.set_id;
-      const et=es.split(' ').filter(Boolean);
-      let overlap=0; et.forEach(t=>{ if(tTokens.has(t)) overlap++; });
-      if(overlap<2) continue;
-      const score=overlap/et.length;
-      if(score<0.75) continue;
-      const key=[score, et.length];
-      if(key[0]>bestKey[0] || (key[0]===bestKey[0] && key[1]>bestKey[1])){ bestKey=key; best=e; }
+  const passes = (bucket && data[bucket]) ? [[[bucket, data[bucket]]], Object.entries(data)]
+                                          : [Object.entries(data)];
+
+  for(const buckets of passes){
+    let best='', bestScore=-1;
+    for(const [sp, list] of buckets){
+      for(const e of (list||[])){
+        // Registry rows often carry only code + brand; derive the ID the way the
+        // Sets tab does, borrowing the card's season when the row has none.
+        const id = e.set_id || idFor(sp, e.code, e.year || tseason);
+        if(!id) continue;
+        const ey = e.year || yearOf(e.set);
+        if(ty && ey && yearOf(ey)!==ty) continue;
+        const et = setTokens(e.set);
+        if(!et.length) continue;
+        if(!et.every(t => tSet.has(t))) continue;    // "Mosaic" ⊂ "Panini Mosaic Football"
+        // Rank on distinctive tokens only — the sport and brand words are shared by
+        // dozens of sets, so "Panini Mosaic" must outrank a generic "Panini Football".
+        const brandTokens = setTokens(e.brand==='Other' ? '' : e.brand);
+        const distinctive = et.filter(t => !catTokens.includes(t) && !brandTokens.includes(t));
+        // Nothing distinctive to go on? Only accept it as an exact match, never a guess.
+        if(!distinctive.length && et.join(' ')!==targetCore) continue;
+        // Brand agreement is a tiebreaker, not a gate: sports sets spell the brand out
+        // in the set name, but for Pokemon the registry's brand column is the language.
+        const brandOk = !brandTokens.length || brandTokens.every(t => tSet.has(t));
+        const langOk  = brandTokens.some(t => langTokens.some(l => l.startsWith(t) || t.startsWith(l)));
+        const score = distinctive.length*10 + et.length + (ty && ey ? 5 : 0)
+                    + (brandOk ? 3 : 0) + (langOk ? 3 : 0);
+        if(score > bestScore){ bestScore=score; best=id; }   // most specific name wins
+      }
     }
+    if(best) return best;
   }
-  return best ? best.set_id : '';
+  return '';
 }
-async function sameCardMatch(card, extra){
+
+// Cleanups that apply no matter which source the card came from.
+// Some records keep the parallel in the variant column ("Camo Red"), leaving Parallel blank.
+// Mirror it across only when the variant actually names a colour/pattern parallel — words that
+// describe a card type ("Base", "Full Art") are not parallels. Extend either list as needed.
+const NOT_PARALLEL = ['base','none','na','standard','regular','common','normal','full art','fullart'];
+const PARALLEL_WORDS = [
+  // colours / materials
+  'silver','gold','red','blue','green','orange','purple','pink','black','white','bronze','teal',
+  'aqua','yellow','camo','neon','platinum','copper','ruby','sapphire','emerald','amethyst','onyx',
+  // patterns / finishes that name a parallel line
+  'prizm','mosaic','wave','disco','mojo','hyper','shimmer','pulsar','scope','tie dye','snakeskin',
+  'no huddle','stained glass','genesis','reactive','choice','fast break','lazer','laser','flash',
+  'sparkle','refractor','atomic','xfractor','superfractor','speckle','velocity','zebra','tiger',
+  'dragon','peacock','marble','checkerboard','starburst','cosmic','galactic','nebula','aurora',
+  'kaleidoscope','rainbow','foilboard','sepia','negative','printing plate','press proof',
+  'prismatic','crystal','fractal','mirror','swirl','cracked ice','ice','pandora','alternate art'
+];
+function detectParallel(variant){
+  const t = String(variant||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  if(!t) return '';
+  if(NOT_PARALLEL.indexOf(t)>=0 || /^base\b/.test(t) || /\bfull art\b/.test(t)) return '';
+  const hit = PARALLEL_WORDS.some(w => new RegExp('\\b'+w.replace(/ /g,'\\s+')+'\\b').test(t));
+  return hit ? String(variant).trim() : '';
+}
+
+// Only fills what Metabase left blank — it never rewrites a value the source supplied.
+function polishCard(c){
+  if(!c) return c;
+  if(!c.set_id){ const found=lookupSetId(c); if(found) c.set_id=found; }
+  if(!c.parallel){ const p=detectParallel(c.variant); if(p) c.parallel=p; }
+  return c;
+}
+
+// Broken/expired image URL: swap the browser's broken-image icon for the placeholder.
+function imgFail(el, cls){
+  const wrap = el && el.parentNode; if(!wrap) return;
+  wrap.innerHTML = cls==='cnoimg' ? '<div class="cnoimg">—</div>' : '<div class="noimg">no image</div>';
+}
+
+// Card Hedger indexes certs per grading company, and 8-digit cert numbers collide
+// across graders — PSA 92229842 and Arena Club 92229842 are different cards. So the
+// record's own grading company decides the lookup, and an Arena Club cert (which only
+// means something inside our system) is never sent to Card Hedger at all.
+// Metabase spells companies inconsistently ("Beckett" vs "BGS"), so map to the code
+// Card Hedger expects. Anything not in this map is internal (Arena Club) or untracked,
+// and gets no cert lookup rather than a lookup against a foreign cert namespace.
+const CH_GRADER_ALIASES = {
+  psa:'PSA', professionalsportsauthenticator:'PSA',
+  bgs:'BGS', beckett:'BGS', beckettgradingservices:'BGS', bvg:'BGS', bccg:'BGS',
+  sgc:'SGC', sportscardguaranty:'SGC',
+  cgc:'CGC', cgccards:'CGC', certifiedguarantycompany:'CGC',
+  csg:'CSG', certifiedsportsguaranty:'CSG',
+  hga:'HGA', hybridgradingapproach:'HGA'
+};
+// "Arena Club 0" means not yet graded, not graded zero.
+function hasRealGrade(card){
+  const g = card && card.grade!=null ? String(card.grade).trim() : '';
+  if(g==='') return false;
+  const n = Number(g.replace(/[^0-9.]/g,''));
+  return !(isNaN(n) || n===0);
+}
+function chGraderFor(card, fallback){
+  const co = card && card.grading_company ? normSport(card.grading_company) : '';
+  const mapped = co ? (CH_GRADER_ALIASES[co]||'') : '';
+  if(mapped) return mapped;
+  // Company Card Hedger doesn't index. If the record carries a real grade from them, the
+  // cert lives in their namespace and Card Hedger can't help. But an Arena Club record with
+  // no grade yet may well be a third-party slab, so try the selected grader and let the
+  // identity check below discard it if the cert belongs to someone else's card.
+  if(co && hasRealGrade(card)) return '';
+  const fb = normSport(fallback||'PSA');
+  return CH_GRADER_ALIASES[fb] || String(fallback||'PSA').toUpperCase();
+}
+function chSkipNote(card){
+  const co = card && card.grading_company ? String(card.grading_company).trim() : '';
+  if(co) return co+' cert numbers aren\u2019t in Card Hedger. Look up this card\u2019s third-party cert for comps.';
+  return 'No grading company on this record, so there\u2019s no cert to price against.';
+}
+
+// Even with the right grader, verify Card Hedger is describing the same card before we
+// take its image or its sales — otherwise a collision silently prices the wrong card.
+function sameCard(a, b){
+  if(!a || !b) return true;                       // nothing to contradict
+  const num = s => String(s||'').replace(/[^0-9a-z]/gi,'').toLowerCase();
+  const an=num(a.card_no), bn=num(b.card_no);
+  if(an && bn && an!==bn) return false;
+  const ap=setTokens(a.player), bp=setTokens(b.player);
+  if(ap.length && bp.length && !ap.some(t => bp.includes(t))) return false;
+  const ay=yearOf(a.set_name), by=yearOf(b.set_name);
+  if(ay && by && ay!==by) return false;
+  return true;
+}
+async function mbLookup(params){
+  try{
+    const r=await fetch('/api/card-match?'+new URLSearchParams(params).toString(),{headers:chHeaders()});
+    if(r.ok){ const d=await r.json(); if(d && d.card) return d.card; }
+  }catch(e){}
+  return null;
+}
+
+// Resolution order when the cert itself isn't in our system:
+//   tier 2 — same card, same grading company AND same grade. That's the same slab class,
+//            so its image, grade, company and est. value all transfer safely.
+//   tier 3 — next copy in the database, whatever its grade. Fills blanks only; grade and
+//            grading company are never taken from it, because they belong to another slab.
+// Returns {tier, row}; tier 0 means nothing in our system matched.
+async function resolveFromSystem(card, extra){
   const get=k=> (card&&card[k]) || (extra&&extra[k]) || '';
   const player=get('player'), card_no=get('card_no');
-  if(!player && !card_no) return null;
+  if(!player && !card_no) return {tier:0, row:null};
+
   const base=[]; if(player) base.push(['player_name',player]); if(card_no) base.push(['card_no',card_no]);
   const set_name=get('set_name'), insert=get('insert'), parallel=get('parallel');
   const precise=base.slice();
@@ -877,10 +1029,40 @@ async function sameCardMatch(card, extra){
   if(insert) precise.push(['insert_name',insert]);
   if(parallel) precise.push(['parallel_name',parallel]);
   const tries = precise.length>base.length ? [precise, base] : [base];   // exact card first, then looser
-  for(const t of tries){
-    try{ const r=await fetch('/api/card-match?'+new URLSearchParams(t).toString(),{headers:chHeaders()}); if(r.ok){ const d=await r.json(); if(d&&d.card&&d.card.set_id) return d.card; } }catch(e){}
+
+  const company=get('grading_company'), grade=get('grade');
+  if(company && String(grade)!==''){
+    for(const t of tries){
+      const row=await mbLookup(t.concat([['grading_company',company],['grade',grade]]));
+      if(row) return {tier:2, row};
+    }
   }
-  return null;
+  for(const t of tries){
+    const row=await mbLookup(t);
+    if(row) return {tier:3, row};
+  }
+  return {tier:0, row:null};
+}
+
+// Adopt a sibling copy's data. 8AC and the admin link identify a different physical item,
+// so they're dropped rather than pointed at the wrong record.
+function adoptSibling(card, row, tier, cert){
+  if(!row) return card;
+  const c = card || {};
+  // A different-grade copy must never supply grade or company — that belongs to this slab.
+  const src = tier===2 ? row : Object.assign({}, row, {grade:'',grade_display:'',grading_company:''});
+  fillBlanks(c, src);
+  if(tier===2){
+    ['grade','grade_display','grading_company'].forEach(k=>{ if(c[k]===''||c[k]==null) c[k]=row[k]; });
+  }
+  if((c.estimate_value===''||c.estimate_value==null) && row.estimate_value!==''&&row.estimate_value!=null){
+    c.estimate_value=row.estimate_value;
+  }
+  if(!c.estimate && row.estimate){ c.estimate=row.estimate; c.estimate_from='sibling'; c.estimate_tier=tier; }
+  if(cert) c.cert=cert;
+  c.ac_number=''; c.admin_url='';
+  c.match_tier=tier;
+  return c;
 }
 function detectEdition(cands){
   for(const s of (cands||[])){
@@ -915,13 +1097,14 @@ function trimmedAvg(recent){
   const avg=prices.reduce((a,b)=>a+b,0)/prices.length;
   return Math.round(avg);                            // whole dollars, no decimals
 }
-function renderSales(sales){
+function renderSales(sales, note){
   const el=$('matchSales'); if(!el) return;
   const has = sales && sales.recent && sales.recent.length;
+  const noteHtml = note ? '<div class="nokey">'+esc(note)+'</div>' : '';
   if(!has){
-    const keyLink = !chKey ? '<div class="nokey">No Card Hedger key set · <span class="chconnect" onclick="openCh()">Add key</span></div>' : '';
+    const keyLink = (!chKey && !note) ? '<div class="nokey">No Card Hedger key set · <span class="chconnect" onclick="openCh()">Add key</span></div>' : '';
     el.innerHTML='<div class="salehead">Recent sales <span class="salesrc"><img class="chlogo" src="'+CH_LOGO+'" alt="">Card Hedger</span></div>'+
-      '<div class="saleavg"><div class="avgcol"><div class="sk">Avg sale</div><div class="avgnum nosale">No Recent Sales</div></div><img class="estlogo" src="'+CH_LOGO+'" alt=""></div>'+keyLink;
+      '<div class="saleavg"><div class="avgcol"><div class="sk">Avg sale</div><div class="avgnum nosale">'+(note?'No Comps':'No Recent Sales')+'</div></div><img class="estlogo" src="'+CH_LOGO+'" alt=""></div>'+noteHtml+keyLink;
     return;
   }
   const avg=trimmedAvg(sales.recent);
@@ -939,11 +1122,12 @@ function renderSales(sales){
 function renderCard(c, source, demo){
   $('matchEmpty').hidden=true; $('matchResult').hidden=false;
   const b=$('matchBatch'); if(b) b.hidden=true;
+  polishCard(c);
   const isCH=source==='cardhedge';
   const backBtn=fromBatch?'<button class="backbtn" onclick="backToBatch()">← Back to results</button>':'';
   const adminLink=c.admin_url?'<a class="adminlink" href="'+esc(c.admin_url)+'" target="_blank" rel="noopener">Link ↗</a>':'';
   const demoBadge=demo?'<span class="cardsrc demo">Demo data</span>':'';
-  const img=c.image ? '<img src="'+esc(c.image)+'" alt="" onclick="openImg(this.src)"><span class="imgzoom">⤢</span>' : '<div class="noimg">no image</div>';
+  const img=c.image ? '<img src="'+esc(c.image)+'" alt="" onclick="openImg(this.src)" onerror="imgFail(this)"><span class="imgzoom">⤢</span>' : '<div class="noimg">no image</div>';
   let rows='';
   FIELD_DEFS.forEach(def=>{
     const key=def[0], label=def[1], o=def[2]||{};
@@ -965,7 +1149,10 @@ function renderCard(c, source, demo){
   const boxes=[];
   // Est. Value — always Arena Club (green). Shows the Metabase value, or "No Est Value".
   const mbVal = (c.estimate && c.estimate.method==='metabase' && c.estimate.value!==''&&c.estimate.value!=null) ? c.estimate.value : '';
-  if(mbVal!=='') boxes.push({label:'Est. Value', val:money(mbVal), sub:'Arena Club', logo:AC_LOGO});
+  const estSub = 'Arena Club' + (c.estimate_from==='sibling'
+    ? (c.estimate_tier===2 ? ' · same grade, other cert' : ' · other copy')
+    : '');
+  if(mbVal!=='') boxes.push({label:'Est. Value', val:money(mbVal), sub:estSub, logo:AC_LOGO});
   else boxes.push({label:'Est. Value', val:'No Est Value', sub:'Arena Club', logo:AC_LOGO, small:true});
   const rc = c.sales && c.sales.recent && c.sales.recent[0];
   let chLast='';
@@ -984,7 +1171,7 @@ function renderCard(c, source, demo){
   $('matchCard').innerHTML=
     '<div class="cardimg">'+img+'</div>'+
     '<div class="cardfields"><div class="cardtop">'+backBtn+'<span class="cardsrc '+(isCH?'cardhedge':'metabase')+'">'+(isCH?'Card Hedger · fallback':'Metabase')+'</span>'+demoBadge+adminLink+'</div>'+est+rows+'</div>';
-  renderSales(c.sales);
+  renderSales(c.sales, c.sales_note);
 }
 
 function renderSalesLoading(){ const el=$('matchSales'); if(el) el.innerHTML='<div class="salehead">Recent sales <span class="salesrc"><img class="chlogo" src="'+CH_LOGO+'" alt="">Card Hedger</span></div><div class="salesempty">Loading comps\u2026</div>'; }
@@ -1000,34 +1187,60 @@ async function doLookup(matchUrl, q){
     const demo=(typeof DEMO_CARDS!=='undefined') && (DEMO_CARDS[q] || DEMO_CARDS[String(q).replace(/\D/g,'')]);
     if(demo){ renderCard(demo,'metabase',true); return; }
   }
-  if(card){ renderCard(card, source); renderSalesLoading(); }
-  // Our system first: if the record is thin but has an identity, match the same card within Metabase before Card Hedger.
-  if(card && !card.set_id && (card.player||card.card_no)){
-    const sys0=await sameCardMatch(card, null);
-    if(sys0){ fillBlanks(card, sys0); renderCard(card, source); renderSalesLoading(); }
-  }
+  if(card){ card.match_tier=1; renderCard(card, source); renderSalesLoading(); }
   const certForCH = card ? String(card.cert||'').replace(/\D/g,'') : String(q).replace(/\D/g,'');
-  const grader = ($('graderSel')&&$('graderSel').value)||'PSA';
+  const grader = chGraderFor(card, $('graderSel')&&$('graderSel').value);
   if(!certForCH){ if(card) renderSales(card.sales||null); else showMatchState('notfound', q); return; }
+  if(!grader){
+    // Record is graded by someone Card Hedger doesn't index (e.g. Arena Club) — asking
+    // anyway would return whichever card happens to share that cert number.
+    if(card){ card.sales=null; card.sales_note=chSkipNote(card); renderCard(card, source); }
+    else showMatchState('notfound', q);
+    return;
+  }
   try{
     const r2=await fetch('/api/card-sales?cert_number='+encodeURIComponent(certForCH)+'&grader='+encodeURIComponent(grader),{headers:chHeaders()});
     if(r2.ok){
       const s=await r2.json();
-      // Find the same card in OUR system — using our own identity, or (if the cert isn't in our system) Card Hedger's identity to bridge.
-      let sysRow=null;
-      const needIdentity = !card || !card.set_id || !card.set_name || !card.grade_display;
-      if(needIdentity){ sysRow = await sameCardMatch(card||{}, s.card); }
+      // Cert collision check: if Card Hedger's record describes a different card, drop it.
+      const chMismatch = !!(card && s.card && !sameCard(card, s.card));
+      if(chMismatch){ s.card=null; s.sales=null; s.ch_variant=s.ch_desc=s.ch_cert_desc=''; }
+
+      // Tier 1 was a direct cert hit in our system and stands as-is. Otherwise walk the
+      // cascade: same company + same grade, then the next copy in the database.
+      let resolved={tier:0,row:null};
+      const needIdentity = !card || !card.set_id || !card.set_name || !card.grade_display ||
+                           card.estimate_value===''||card.estimate_value==null || !card.image;
+      if(needIdentity) resolved = await resolveFromSystem(card||{}, s.card);
+
       if(!card){
-        if(sysRow){ card=Object.assign({}, sysRow); card.cert=certForCH||card.cert; card.ac_number=''; card.admin_url=''; card.grade=''; card.grade_display=''; card.grading_company=''; card.estimate=null; card.estimate_value=''; source='metabase'; sysRow=null; }
-        else if(s.card){ card=s.card; source='cardhedge'; }
+        if(resolved.row){
+          card = adoptSibling({}, resolved.row, resolved.tier, certForCH);
+          card.grade=''; card.grade_display=''; card.grading_company='';
+          if(resolved.tier===2){ ['grade','grade_display','grading_company'].forEach(k=>card[k]=resolved.row[k]); }
+          source='metabase';
+        }
+        else if(s.card){ card=s.card; source='cardhedge'; card.match_tier=4; }
       }
       if(card){
-        // Grade belongs to THIS cert — take it from the dropped card's own record or Card Hedger, never a different copy.
-        if(s.card){ ['grade','grade_display','grading_company'].forEach(k=>{ if((card[k]===''||card[k]==null)&&s.card[k]!==''&&s.card[k]!=null) card[k]=s.card[k]; }); }
-        if(sysRow) fillBlanks(card, sysRow);   // same card in our DB → set name/id, subset(+id), insert, card no, parallel, etc.
+        // Grade belongs to THIS cert, so it comes from the cert's own record or Card Hedger —
+        // never a different copy. An "Arena Club 0" record has no real grade yet, so Card
+        // Hedger's grade and grading company replace it outright rather than just filling a blank.
+        if(s.card){
+          if(!hasRealGrade(card) && hasRealGrade(s.card)){
+            ['grade','grade_display','grading_company'].forEach(k=>{ if(s.card[k]!==''&&s.card[k]!=null) card[k]=s.card[k]; });
+          } else {
+            ['grade','grade_display','grading_company'].forEach(k=>{ if((card[k]===''||card[k]==null)&&s.card[k]!==''&&s.card[k]!=null) card[k]=s.card[k]; });
+          }
+        }
+        if(resolved.row && card.match_tier===1) fillBlanks(card, resolved.row);   // tier 1 wins; sibling only fills gaps
+        else if(resolved.row) adoptSibling(card, resolved.row, resolved.tier, card.cert);
         if(s.card) fillBlanks(card, s.card);    // Card Hedger → image + anything still blank
-        if(!card.set_id){ const sid=lookupSetId(card); if(sid) card.set_id=sid; }   // map set → Set ID from the Set IDs registry
+        polishCard(card);   // map set → Set ID from the registry
         card.sales = s.sales||null;
+        card.sales_note = chMismatch
+          ? 'Card Hedger\u2019s '+grader+' cert '+certForCH+' is a different card, so its comps are hidden.'
+          : '';
         const texts=[s.ch_variant, s.ch_desc, s.ch_cert_desc];
         const fin=detectFinish([card.finish, card.variant, card.parallel].concat(texts));
         if(fin) card.finish=fin;
@@ -1084,12 +1297,15 @@ async function fetchCompact(cert, grader){
   try{ const r=await fetch('/api/card-match?cert_number='+encodeURIComponent(cert)+'&grader='+encodeURIComponent(grader),{headers:chHeaders()}); if(r.ok){ const d=await r.json(); if(d&&d.card){card=d.card;source=d.source||'metabase';} } }catch(e){}
   if(!card){ const demo=(typeof DEMO_CARDS!=='undefined')&&DEMO_CARDS[cert]; if(demo) return {card:demo,source:'metabase'}; }
   const cc=card?String(card.cert||'').replace(/\D/g,''):cert;
-  try{ const r2=await fetch('/api/card-sales?cert_number='+encodeURIComponent(cc)+'&grader='+encodeURIComponent(grader),{headers:chHeaders()}); if(r2.ok){ const s=await r2.json(); if(!card&&s.card){card=s.card;source='cardhedge';} else if(card&&s.card){ fillBlanks(card,s.card); } if(card){ card.sales=s.sales||null; } } }catch(e){}
+  const g=chGraderFor(card, grader);
+  if(!g){ if(card){ card.sales=null; card.sales_note=chSkipNote(card); } return {card,source}; }
+  try{ const r2=await fetch('/api/card-sales?cert_number='+encodeURIComponent(cc)+'&grader='+encodeURIComponent(g),{headers:chHeaders()}); if(r2.ok){ const s=await r2.json(); const bad=!!(card&&s.card&&!sameCard(card,s.card)); if(bad){ s.card=null; s.sales=null; } if(!card&&s.card){card=s.card;source='cardhedge';} else if(card&&s.card){ fillBlanks(card,s.card); } if(card){ card.sales=s.sales||null; if(bad) card.sales_note='Card Hedger\u2019s '+g+' cert '+cc+' is a different card.'; } } }catch(e){}
   return {card,source};
 }
 function compactHTML(card, cert){
   if(!card) return '<div class="ccard miss" id="cc_'+esc(cert)+'"><div class="cimg"><div class="cnoimg">—</div></div><div class="cbody"><div class="ccert">'+esc(cert)+'</div><div class="ctitle">No match</div></div></div>';
-  const img=card.image?'<img src="'+esc(card.image)+'">':'<div class="cnoimg">—</div>';
+  polishCard(card);
+  const img=card.image?'<img src="'+esc(card.image)+'" onerror="imgFail(this,&quot;cnoimg&quot;)">':'<div class="cnoimg">—</div>';
   const est=(card.estimate&&card.estimate.value!==''&&card.estimate.value!=null)?money(card.estimate.value):'';
   const last=(card.sales&&card.sales.summary&&card.sales.summary.last!==''&&card.sales.summary.last!=null)?money(card.sales.summary.last):'';
   const grade=card.grade_display||'';
