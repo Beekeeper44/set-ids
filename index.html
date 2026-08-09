@@ -267,6 +267,15 @@
   .sibrow.used .sibac{color:var(--green)}
   .sibval{text-align:right}
   .sibmore{padding:8px 10px;font-size:12.5px;color:#7d8c84;font-family:'JetBrains Mono',monospace}
+  .sibchips{display:flex;flex-wrap:wrap;gap:7px;margin:2px 0 12px}
+  .sibchip{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid rgba(255,255,255,.14);
+    border-radius:999px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#93a49b;cursor:pointer;user-select:none}
+  .sibchip:hover{border-color:rgba(255,255,255,.3)}
+  .sibchip.on{border-color:rgba(0,255,140,.45);color:#dfe9e3;background:rgba(0,255,140,.06)}
+  .sibchip input{accent-color:#3DEB3D;margin:0;cursor:pointer}
+  .sibn{opacity:.55}
+  .sibclear{margin-left:10px;font-size:12px;color:var(--green);cursor:pointer;text-transform:none;letter-spacing:0}
+  .sibclear:hover{text-decoration:underline}
   .salechip{flex:1;min-width:82px;background:#0a0f0d;border:1px solid var(--border);border-radius:10px;padding:10px 12px}
   .sk{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#c7d4cc;font-family:'JetBrains Mono',monospace}
   .sv{font-size:19px;font-weight:800;color:var(--green);margin-top:3px;font-family:'JetBrains Mono',monospace}
@@ -1160,6 +1169,28 @@ function sameCard(a, b){
   if(ay && by && ay!==by) return false;
   return true;
 }
+// Same identifier normalisation the API uses: strip an "8AC" prefix (whose 8 is a digit) and
+// leading zeros, so 8AC003117326 and 3117326 compare equal.
+const idKeyJS = v => String(v==null?'':v).replace(/^\s*8ac/i,'').replace(/\D/g,'').replace(/^0+/,'');
+
+// Grade filter for the Other copies table. null = show everything, which is the default.
+let sibFilter = null;
+const sibComboKey = s => canonCompany(s.grading_company||'') + '|' +
+  (isFinite(parseFloat(String(s.grade==null?'':s.grade).replace(/[^0-9.]/g,'')))
+    ? parseFloat(String(s.grade).replace(/[^0-9.]/g,'')) : '');
+const sibComboLabel = s => (s.grade_display && String(s.grade_display).trim())
+  || ((s.grading_company||'?')+' '+(s.grade||'?'));
+function toggleSibFilter(key, on){
+  if(sibFilter===null){                       // first click: start from everything visible
+    sibFilter = new Set(lastSibKeys);
+  }
+  if(on) sibFilter.add(key); else sibFilter.delete(key);
+  if(sibFilter.size===0 || sibFilter.size===lastSibKeys.length) sibFilter=null;
+  if(lastCard) renderCard(lastCard, lastSource);
+}
+function resetSibFilter(){ sibFilter=null; if(lastCard) renderCard(lastCard, lastSource); }
+let lastSibKeys = [], lastCard = null, lastSource = '';
+
 // Choose among sibling copies the cert lookup already returned. Same company + same grade is
 // tier 2. Otherwise tier 3 takes the copy whose grade is *closest* to ours rather than the
 // dearest one, so a PSA 9 doesn't inherit the top PSA 10 price in the vault.
@@ -1260,6 +1291,39 @@ async function mbLookupAll(params){
   return [];
 }
 
+// Every copy of this card our system knows about. No status/component filtering is applied —
+// a sold, archived or in-process copy is just as valid a source for a value as a vaulted one.
+async function allCopiesFromSystem(card, extra){
+  const get=k=> (card&&card[k]) || (extra&&extra[k]) || '';
+  const player=get('player'), card_no=get('card_no');
+  if(!player && !card_no) return [];
+  const base=[]; if(player) base.push(['player_name',player]); if(card_no) base.push(['card_no',card_no]);
+  const set_name=get('set_name'), insert=get('insert'), parallel=get('parallel');
+  const precise=base.slice();
+  if(set_name) precise.push(['set_name',set_name]);
+  if(insert) precise.push(['insert_name',insert]);
+  if(parallel) precise.push(['parallel_name',parallel]);
+  const tries = precise.length>base.length ? [precise, base] : [base];
+  for(const t of tries){ const rows = await mbLookupAll(t); if(rows.length) return rows; }
+  return [];
+}
+
+// A suggested value may come from ANY copy in the system carrying one, at any status — not just
+// from the copy chosen to describe the card. Prefers same company + same grade, then nearest.
+const isPriced = r => !!(r && r.estimate && Number(r.estimate.value)>0);
+async function findValuedCopy(card, extra, pool){
+  const ownGrade = hasRealGrade(card);
+  const company = (ownGrade && card && card.grading_company) ? card.grading_company
+                : (extra && extra.grading_company) || (card && card.grading_company) || '';
+  const grade   = ownGrade ? card.grade
+                : (extra && hasRealGrade(extra) ? extra.grade : '');
+  let p = pickSibling((pool||[]).filter(isPriced), company, grade);
+  if(p.row) return p;
+  const rows = await allCopiesFromSystem(card, extra);
+  p = pickSibling(rows.filter(isPriced), company, grade);
+  return p.row ? p : {tier:0, row:null};
+}
+
 async function resolveFromSystem(card, extra){
   const get=k=> (card&&card[k]) || (extra&&extra[k]) || '';
   const player=get('player'), card_no=get('card_no');
@@ -1301,6 +1365,23 @@ function siblingSrc(row, tier){
   return tier===2 ? row : Object.assign({}, row, {grade:'',grade_display:'',grading_company:'',image:''});
 }
 
+// Take a value from another copy. Kept separate from adoptSibling so the panel can source its
+// value from a copy that isn't the one describing the card.
+function applyEstimate(c, row, tier){
+  if(!c || !row) return c;
+  const priced = row.estimate && Number(row.estimate.value)>0;
+  if(!priced) return c;
+  if(c.estimate_value===''||c.estimate_value==null){
+    if(row.estimate_value!==''&&row.estimate_value!=null) c.estimate_value=row.estimate_value;
+  }
+  if(!c.estimate){
+    c.estimate=row.estimate; c.estimate_from='sibling'; c.estimate_tier=tier;
+    c.estimate_grade=row.grade_display||'';
+    c.estimate_ac=row.ac_number||''; c.estimate_cert=row.cert||'';
+  }
+  return c;
+}
+
 // Adopt a sibling copy's data. When the cert itself matched our system (keepIdentity), the
 // record keeps its own cert / 8AC / admin link and the sibling only contributes what's missing —
 // notably the est. value, which fillBlanks() doesn't carry. Otherwise those identity fields are
@@ -1315,14 +1396,7 @@ function adoptSibling(card, row, tier, cert, keepIdentity){
     ['grade','grade_display','grading_company'].forEach(k=>{ if(row[k]!==''&&row[k]!=null) c[k]=row[k]; });
   }
   const rowPriced = row.estimate && Number(row.estimate.value)>0;
-  if((c.estimate_value===''||c.estimate_value==null) && rowPriced && row.estimate_value!==''&&row.estimate_value!=null){
-    c.estimate_value=row.estimate_value;
-  }
-  if(!c.estimate && rowPriced){
-    c.estimate=row.estimate; c.estimate_from='sibling'; c.estimate_tier=tier;
-    c.estimate_grade=row.grade_display||'';
-    c.estimate_ac=row.ac_number||''; c.estimate_cert=row.cert||'';
-  }
+  applyEstimate(c, row, tier);
   if(!keepIdentity){
     if(cert) c.cert=cert;        // the cert you searched stays the cert on screen
     c.ac_number=''; c.admin_url='';
@@ -1386,6 +1460,7 @@ function renderSales(sales, note){
 }
 
 function renderCard(c, source, demo){
+  lastCard=c; lastSource=source;
   $('matchEmpty').hidden=true; $('matchResult').hidden=false;
   const b=$('matchBatch'); if(b) b.hidden=true;
   polishCard(c);
@@ -1443,21 +1518,54 @@ function renderCard(c, source, demo){
   // Other copies of this same card in the vault, matched on set / insert / card no /
   // parallel (via subset_id). Shown so a borrowed value is traceable to a real 8AC.
   let sibHtml='';
-  const sibs=(c.siblings||[]).filter(s=>s && (s.ac_number||s.cert));
+  // 30460 can return the same item twice (component + main), so the card being viewed can slip
+  // into its own sibling list. Match on 8AC or cert and drop it.
+  const selfAc=idKeyJS(c.ac_number), selfCert=idKeyJS(c.cert);
+  const sibs=(c.siblings||[]).filter(s=>{
+    if(!s || !(s.ac_number||s.cert)) return false;
+    if(selfAc && idKeyJS(s.ac_number)===selfAc) return false;
+    if(selfCert && idKeyJS(s.cert)===selfCert) return false;
+    return true;
+  });
   if(sibs.length){
     const used = c.estimate_ac||'';
-    const rowsHtml = sibs.slice(0,12).map(s=>{
-      const val = (s.estimate && Number(s.estimate.value)>0) ? money(s.estimate.value) : '—';
-      const isUsed = used && String(s.ac_number)===String(used);
+    // One checkbox per grading company + grade present. All on by default; ticking a subset
+    // narrows the table without touching the suggested value above.
+    const combos = [];
+    sibs.forEach(s2=>{
+      const k = sibComboKey(s2);
+      let hit = combos.find(x=>x.key===k);
+      if(!hit){ hit={key:k, label:sibComboLabel(s2), n:0, valued:0}; combos.push(hit); }
+      hit.n++;
+      if(s2.estimate && Number(s2.estimate.value)>0) hit.valued++;
+    });
+    combos.sort((a,b)=> b.n-a.n || a.label.localeCompare(b.label));
+    lastSibKeys = combos.map(x=>x.key);
+    const active = k => sibFilter===null || sibFilter.has(k);
+    const shown = sibs.filter(s2=>active(sibComboKey(s2)));
+
+    const chips = combos.map(x=>
+      '<label class="sibchip'+(active(x.key)?' on':'')+'">'
+      +'<input type="checkbox" '+(active(x.key)?'checked':'')+' onchange="toggleSibFilter('+JSON.stringify(x.key).replace(/"/g,'&quot;')+', this.checked)">'
+      +esc(x.label)+'<span class="sibn">'+x.n+'</span></label>').join('');
+    const clear = sibFilter!==null ? '<span class="sibclear" onclick="resetSibFilter()">show all</span>' : '';
+
+    const rowsHtml = shown.slice(0,25).map(s2=>{
+      const val = (s2.estimate && Number(s2.estimate.value)>0) ? money(s2.estimate.value) : '—';
+      const isUsed = used && String(s2.ac_number)===String(used);
       return '<div class="sibrow'+(isUsed?' used':'')+'">'
-        +'<span class="sibac">'+esc(s.ac_number||'—')+'</span>'
-        +'<span class="sibgrade">'+esc(s.grade_display||'—')+'</span>'
-        +'<span class="sibcert">'+esc(s.cert||'—')+'</span>'
+        +'<span class="sibac">'+esc(s2.ac_number||'—')+'</span>'
+        +'<span class="sibgrade">'+esc(sibComboLabel(s2))+'</span>'
+        +'<span class="sibcert">'+esc(s2.cert||'—')+'</span>'
         +'<span class="sibval">'+esc(val)+'</span></div>';
     }).join('');
-    sibHtml='<div class="sibwrap"><div class="sibhead">Other copies in the vault <span class="sibcount">'+sibs.length+'</span></div>'
+
+    sibHtml='<div class="sibwrap"><div class="sibhead">Other copies in the vault '
+      +'<span class="sibcount">'+shown.length+(shown.length!==sibs.length?(' of '+sibs.length):'')+'</span>'+clear+'</div>'
+      +'<div class="sibchips">'+chips+'</div>'
       +'<div class="sibrow sibhdr"><span>8AC</span><span>Grade</span><span>Cert</span><span>Est. value</span></div>'
-      +rowsHtml+(sibs.length>12?'<div class="sibmore">+'+(sibs.length-12)+' more</div>':'')+'</div>';
+      +(shown.length?rowsHtml:'<div class="sibmore">nothing matches that filter</div>')
+      +(shown.length>25?'<div class="sibmore">+'+(shown.length-25)+' more</div>':'')+'</div>';
   }
   $('matchCard').innerHTML=
     '<div class="cardimg">'+img+'</div>'+
@@ -1495,6 +1603,10 @@ async function doLookup(matchUrl, q){
     if(thin){
       const own = pickSibling(siblings, card.grading_company, card.grade);
       if(own.row) adoptSibling(card, own.row, own.tier, card.cert, true);
+      if(!card.estimate){
+        const v = await findValuedCopy(card, null, siblings);
+        if(v.row) applyEstimate(card, v.row, v.tier);
+      }
     }
   }
   if(card){ card.siblings = siblings; renderCard(card, source); renderSalesLoading(); }
@@ -1564,6 +1676,12 @@ async function doLookup(matchUrl, q){
         let hadImg = !!card.image;
         // tier 1 keeps its own cert/8AC/link; either way the sibling fills what's missing
         if(resolved.row) adoptSibling(card, resolved.row, resolved.tier, card.cert, card.match_tier===1);
+        // The copy that best describes the card may itself be unvalued. Any copy in the system
+        // with a value will do — whatever its status.
+        if(!card.estimate){
+          const v = await findValuedCopy(card, s.card, siblings);
+          if(v.row) applyEstimate(card, v.row, v.tier);
+        }
         hadImg = noteImage(card, hadImg, 'sibling');
         if(s.card) fillBlanks(card, s.card);    // Card Hedger → image + anything still blank
         noteImage(card, hadImg, 'cardhedger');

@@ -113,7 +113,17 @@ and grade. That ordering matters: an Arena Club card never reaches Card Hedger (
 cert), so if enrichment sat inside that block it would render with only its own row — which is
 why one 8AC showed a full card and its identical twin showed almost nothing.
 
-The panel lists **Other copies in the vault** beneath the fields — 8AC, grade, cert and est. value
+The panel lists **Other copies in the vault** beneath the fields, with a checkbox per grading
+company + grade (`PSA 10`, `Arena Club 9.5`, `BGS 9.5`…). All are on by default; ticking a subset
+narrows the table. Chips are keyed through `canonCompany()` and a numeric grade, so `Beckett 9.5`
+and `BGS 9.5` collapse into one. Filtering affects the table only — the suggested value above is
+unchanged.
+
+The card being viewed is excluded from its own list: 30460 can return the same item twice
+(component + main row), so one copy becomes the card and the other used to appear as a sibling
+with no est. value. Matching is on `idKeyJS()`, so `8AC003117326` and `3117326` compare equal.
+
+The list — 8AC, grade, cert and est. value
 for every sibling, with the copy a borrowed value came from highlighted. The Est. Value caption
 names it too ("Arena Club · same grade, from 8AC 3849393"), so a borrowed number is always
 traceable to a real item.
@@ -361,6 +371,20 @@ IDs live in the card table, so `lookupInsertId()` maps insert → `insert_id` by
 card in the same set carrying that insert name (falling back to any set). `lookupSubsetId()` does
 the same for subsets. Both need `insert_name` / `subset_name` as filter params on
 `/api/card-match`.
+
+## Where a suggested value can come from
+**Any copy in the system that carries one, at any status.** Nothing in this app filters on status
+or `is_in_component` — a sold, archived or in-process copy is as valid a source as a vaulted one.
+(If 30460 itself restricts by status, that filter is upstream and invisible here.)
+
+Choosing the copy that best *describes* the card and finding a *value* are separate steps:
+`adoptSibling()` does the first, `findValuedCopy()` the second. Previously they were the same
+step, so when the best-matching copy happened to be unvalued the search stopped there and the
+panel showed no value even though other copies had one.
+
+`findValuedCopy()` looks at the copies already returned with the lookup, then widens to the rest
+of the system via `allCopiesFromSystem()`, preferring same company + same grade and falling back
+to nearest grade.
 
 ## Suggested values
 A value taken from another copy is rendered as **Suggested Value** — its own label, a dashed
