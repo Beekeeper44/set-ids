@@ -14,6 +14,10 @@ const pick = (o, ...targets) => {
 const hasKey = (o, ...targets) => !!o && Object.keys(o).some(k => targets.includes(norm(k)));
 const asBool = v => { if (typeof v === 'boolean') return v; const s = norm(v); return s==='true'||s==='t'||s==='y'||s==='yes'||s==='1'||s==='rookie'; };
 const numify = v => { if (v===''||v==null) return ''; const n=Number(String(v).replace(/[^0-9.\-]/g,'')); return isNaN(n)?'':n; };
+// $0.00 means "not valued yet", not "worth nothing" — no card in the vault is genuinely worth
+// zero. Treating it as a real number would show "$0" and, worse, let a zero-valued copy be
+// suggested to its twins as though it were a price.
+const priced = v => { const n = numify(v); return (n === '' || !(Number(n) > 0)) ? '' : n; };
 const gradeDisplay = (c, g) => [String(c||'').trim(), String(g??'').trim()].filter(Boolean).join(' ');
 const GRADER_NAMES = { psa:'PSA', bgs:'BGS', sgc:'SGC', cgc:'CGC', csg:'CSG', hga:'HGA', arenaclub:'Arena Club' };
 const graderName = c => { const k=norm(c); return GRADER_NAMES[k] || String(c||'').toUpperCase(); };
@@ -67,6 +71,7 @@ const FILTER_COLS = {
   grading_company: ['gradingcompany','grader','gradecompany','company'],
   set_name:        ['setname','set'],
   insert_name:     ['insertname','insert'],
+  subset_name:     ['subsetname','subset'],
   parallel_name:   ['parallelname','parallel']
 };
 // Identifier comparison has to survive formatting differences: the "8AC" prefix (whose 8 is a
@@ -142,7 +147,29 @@ export default async function handler(req, res) {
   const q = req.query || {};
   const cert = String(q.cert_number || q.cert || '').replace(/\D/g, '');
   const ac = String(q.ac_number || q.ac || '').trim();
-  const IDK = ['player_name', 'card_no', 'grade', 'grading_company', 'set_name', 'insert_name', 'parallel_name'];
+  // ?player_sport=<name> → which sport this player's cards are tagged with, and how dominant it
+  // is. Individual rows are mis-tagged often enough that the caller needs the share, not a single
+  // row's sport: Ohtani carries a few basketball rows against ~38k baseball ones.
+  if (q.player_sport != null && String(q.player_sport).trim() !== '') {
+    const name = String(q.player_sport).trim();
+    try {
+      const rows = await queryMetabase(BASE, KEY, CARD, { player_name: name });
+      const keep = rows.filter(r => rowMatchesFilters(r, { player_name: name }));
+      const tally = {};
+      keep.forEach(r => { const sp = norm(pick(r, 'sport', 'category')); if (sp) tally[sp] = (tally[sp] || 0) + 1; });
+      const total = Object.values(tally).reduce((a, b) => a + b, 0);
+      const best = Object.keys(tally).sort((a, b) => tally[b] - tally[a])[0] || '';
+      res.status(200).json({
+        sport: best,
+        share: total ? tally[best] / total : 0,
+        total,
+        tally
+      });
+    } catch (e) { res.status(200).json({ sport: '', share: 0, total: 0, tally: {} }); }
+    return;
+  }
+
+  const IDK = ['player_name', 'card_no', 'grade', 'grading_company', 'set_name', 'insert_name', 'subset_name', 'parallel_name'];
   const idFilters = {};
   IDK.forEach(k => { if (q[k] != null && String(q[k]).trim() !== '') idFilters[k] = String(q[k]).trim(); });
 
@@ -165,7 +192,8 @@ export default async function handler(req, res) {
       // When a cert/8AC matches several rows (e.g. component + main), use the most-populated one.
       const row = matched.length > 1 ? matched.slice().sort((a, b) => nonEmpty(b) - nonEmpty(a))[0] : matched[0];
       const card = normalizeCard(row, cert);
-      const mbVal = numify(card.estimate_value);
+      const mbVal = priced(card.estimate_value);
+      if (mbVal === '') card.estimate_value = '';
       card.estimate = mbVal !== '' ? { value: mbVal, low: '', high: '', confidence: '', method: 'metabase' } : null;
 
       // Other copies of the same card, already in this response — the est. value and image the
@@ -174,7 +202,8 @@ export default async function handler(req, res) {
         .filter(r => r !== row && sameSku(row, r))
         .map(r => {
           const s = normalizeCard(r, '');
-          const v = numify(s.estimate_value);
+          const v = priced(s.estimate_value);
+          if (v === '') s.estimate_value = '';
           s.estimate = v !== '' ? { value: v, low: '', high: '', confidence: '', method: 'metabase' } : null;
           return s;
         });

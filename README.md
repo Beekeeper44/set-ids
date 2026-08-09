@@ -100,10 +100,23 @@ Each carries its own cert, grade, grading company, image and estimated value.
 without spending another query. `pickSibling()` chooses:
 
 1. **Same grading company + same grade** → tier 2, preferring a copy that actually carries a value
-   over an empty twin.
+   over an empty twin. Companies are compared through `canonCompany()`, because 30460 stores the
+   column as free text — `beckett`, `Beckett Grading Services` and `BGS` are one grader and must
+   match as siblings, while `arena_club` stays distinct from all of them. Grades parse as numbers,
+   so BGS/SGC half grades (9.5, 8.5) and `9` vs `9.0` compare correctly.
 2. Otherwise **same grading company first, then closest grade** → tier 3. Staying inside one
    grading scale beats hopping to another, and closest-grade stops a PSA 9 inheriting the dearest
    PSA 10 in the vault.
+
+Sibling enrichment runs **before** the Card Hedger gate, using the record's own grading company
+and grade. That ordering matters: an Arena Club card never reaches Card Hedger (no third-party
+cert), so if enrichment sat inside that block it would render with only its own row — which is
+why one 8AC showed a full card and its identical twin showed almost nothing.
+
+The panel lists **Other copies in the vault** beneath the fields — 8AC, grade, cert and est. value
+for every sibling, with the copy a borrowed value came from highlighted. The Est. Value caption
+names it too ("Arena Club · same grade, from 8AC 3849393"), so a borrowed number is always
+traceable to a real item.
 
 `resolveFromSystem()` (separate identity queries) is now only the fallback for when the cert isn't
 in 30460 at all and there are no siblings to work with.
@@ -134,6 +147,12 @@ Tier 2 needs a real grade to search on, and a stub hasn't got one. It uses the g
 Card Hedger read off the actual cert instead — searching on the "Arena Club / 0" placeholder just
 finds other ungraded stubs.
 
+**Grade and grading company are never sent as filters.** The column is free text — Card Hedger
+says `PSA`, 30460 stores `psa` — and a casing mismatch in the server-side filter silently drops an
+exact-grade match to a nearest-grade one, losing the grade and image with it. `resolveFromSystem()`
+queries on identity alone, takes back every copy (`card` + `siblings`), and picks client-side via
+`pickSibling()`, where `canonCompany()` and numeric grade comparison already handle the variations.
+
 Tier 2 and 3 run against `/api/card-match` using its identity parameters (`player_name`,
 `card_no`, `set_name`, `insert_name`, `parallel_name`, plus `grading_company` and `grade` for
 tier 2), narrowest query first, then a looser player + card number query.
@@ -141,7 +160,20 @@ tier 2), narrowest query first, then a looser player + card number query.
 ## Set ID resolution
 Metabase 30460 often returns a blank `set_id`. When it does, `lookupSetId()` matches the card's
 set name against the Sets registry (question 21088) and derives the ID the same way the Sets tab
-does — `sid()` / `idFor()`, i.e. sport code + set code + year. Matching rules: years are stripped before comparing; the registry set name must be fully
+does — `sid()` / `idFor()`, i.e. sport code + set code + year. Matching runs three passes, scored so the most literal wins:
+
+| Pass | Matches when | Example |
+|---|---|---|
+| exact | every registry token appears in the card's set name | `Panini Mosaic` ⊂ `2025 Panini Mosaic Football` |
+| relaxed | same, ignoring **one** trailing `Series` / `Set` / `Edition` | registry `Scarlet & Violet Series` ← card `2023 Pokemon Scarlet & Violet` |
+| code | the card spells the set as its registry code | card `2023 Pokemon SWSH` → `PKMN SWSH 2023` |
+
+Only one trailing descriptor is stripped, never a run — `Base Set Series` must reduce to `Base Set`,
+not to `Base`, or the German `Base Set` outscores the English entry. For TCG the registry's brand
+column holds the **language**; a card naming no language is treated as English, so a foreign
+edition can't win on a literal name match.
+
+Other rules: years are stripped before comparing; the registry set name must be fully
 contained in the card's set name; ranking favours distinctive tokens, so `Panini Mosaic` (`FB PM`)
 beats a generic `Panini Football` (`FB PF`). Brand and language act as tiebreakers rather than
 filters — that's what lets Japanese Pokemon cards resolve to the `… JPN` codes. Round-tripping the
@@ -170,6 +202,23 @@ present in the row at all, that filter is skipped rather than treated as a misma
 `?debug=1` reports `row_count`, `matched_count` and `discarded`. A large `discarded` on every
 lookup confirms the filter isn't being applied server-side — worth fixing in the question, since
 every consumer of 30460 has the same problem and only this proxy is now defending against it.
+
+## Third-party graders (PSA / BGS / SGC / CGC / CSG / HGA)
+These reach Card Hedger, so they get a tier Arena Club cards don't: comps, an image, and the real
+grade when our row is a stub. Company spellings are canonicalised (`beckett`, `Beckett Grading
+Services`, `bvg` → BGS), and half grades compare numerically, so BGS/SGC/CSG 9.5 and 8.5 match
+their own twins as exact siblings.
+
+**SGC's 10–100 scale.** SGC graded 10–100 for years — SGC 96 is roughly a 9 — and records still
+carry both forms. `gradeScale()` classifies a grade as ten-point or hundred-point, and grades on
+*different* scales are treated as "can't compare" rather than a contradiction. Without it, our
+`SGC 96` row versus Card Hedger's `SGC 9` looked like a different card and its image was thrown
+away. No conversion is assumed in either direction — if 30460 should be storing one canonical
+scale, that's a data fix, not a matcher fix.
+
+**Known limit:** BGS Black Label 10 and a regular BGS 10 are indistinguishable here — both parse
+as grade 10 and will match each other as exact siblings, despite very different values. If 30846
+carries a subgrade or label-type column, that's what would separate them.
 
 ## Cert collisions across graders (important)
 Cert numbers are only unique *within* a grading company — PSA 92229842 and Arena Club 92229842
@@ -254,6 +303,80 @@ displaying it faithfully — the scan itself is mis-assigned. Confirm with:
 `debug.raw_row` shows the exact `front_slab_picture_url` stored against that 8AC. If two adjacent
 8ACs carry the same URL, a scanning batch mapped images to the wrong records and it needs fixing
 at the source — every tool reading that column shows the same wrong picture.
+
+## Sport resolution
+Both directions come out of `SPORTS` — no separate lookup table. Sport names are indexed through
+`setTokens()` as well as `normSport()`, because a stopword inside a name ("Magic **The** Gathering")
+otherwise can't match a phrase pulled from a set name. `sportFromSetName()` tries three-word, then
+two-word, then one-word phrases so "One Piece" and "Dragon Ball S" resolve.
+
+Order: Card Hedger's `category` → sport word in the set name → `sportFromPlayer()`. The last one
+asks `/api/card-match?player_sport=<name>`, which returns the sport tally for that player.
+
+**It takes the dominant sport, not a unique one.** Measured on ~51k players, 2.61% carry more than
+one sport — but weighted by card volume that's most of the collection, because the mis-tagged
+players are the most-collected ones (Ohtani has basketball rows against ~38k baseball). Requiring
+uniqueness would decline exactly when it's needed. So the top sport wins when it holds ≥95%
+(`SPORT_DOMINANCE`) of that player's cards, and anything less declines — Michael Jordan genuinely
+spans sports and should decline. Non-players (`Checklist`, `Redemption`, `Title Card`, numeric
+names) are filtered out by `isRealPlayer()`.
+
+## settleIds() runs on every exit path
+Sport resolution and the name→ID mappings live in `settleIds()`, called from **all three** exits of
+`doLookup()` — the no-cert path, the non-Card-Hedger-grader path, and the Card Hedger path. It was
+originally inline in the last of those, which meant an Arena Club card (no third-party cert, so it
+returns early) silently skipped sport resolution, the system Set ID lookup and insert/subset
+mapping. Any new early return must call it too.
+
+## Brand-only registry rows are a last resort
+A registry row whose only match token is its own brand — `Donruss`, `Select`, `Score`, `Playoff`,
+`Panini Football` — is a catch-all, and used to win as a literal "exact" match. That made
+`2024 Donruss Football` resolve to `FB DONRUSS` when `category` was set and `FB PD` when it wasn't:
+the same card, two answers. Those rows now score below anything carrying a distinctive word, so
+`2024 Donruss Football`, `2024 Panini Donruss Football` and `2024 Donruss` all give **`FB PD 2024`**.
+
+Seven registry rows changed behaviour as a result (`BB DON→BB PD`, `BB SELECT→BB PS`,
+`BB OPC→BB PEE`, `FB DONRUSS→FB PD`, `FB POFF→FB PPOFF`, `FB SCORE2→FB SCORE`, `FB PF→FB P`).
+Confirm those are the intended canonical IDs; retiring or year-bounding the legacy brand-only rows
+in 21088 would make it deterministic rather than something the matcher reasons around.
+
+## Set ID: our system first, registry second
+`lookupSetIdInSystem()` asks 30460 for another card in the same set and takes its `set_id`
+verbatim. Only if that misses does `lookupSetId()` derive one from the registry.
+
+That ordering exists because deriving guesses at the season format: the registry row for Fleer
+Ultra has no year, so a 1996 card derives `BK FLRU 1996` where our system uses `BK FLRU 1996-97`.
+Our own data is authoritative for our own IDs; the registry is the fallback for sets we've never
+carried.
+
+The registry matcher gained two things:
+- a **brand-optional pass** — Card Hedger drops the manufacturer, so their "Donruss Optic" has to
+  reach our "Panini Donruss Optic" (`FB PDOP`);
+- a **sport-prefix guard** — a Set ID whose prefix doesn't match the card's sport is rejected. Without
+  it, "2020 Donruss Optic Football" matched Soccer's `Donruss Optic` and returned `SCR DONOP 2020`.
+
+## Insert and Subset IDs
+The Set ID registry has no insert data — `sport, brand, year, set_name, code, set_id` only. Insert
+IDs live in the card table, so `lookupInsertId()` maps insert → `insert_id` by finding any other
+card in the same set carrying that insert name (falling back to any set). `lookupSubsetId()` does
+the same for subsets. Both need `insert_name` / `subset_name` as filter params on
+`/api/card-match`.
+
+## Suggested values
+A value taken from another copy is rendered as **Suggested Value** — its own label, a dashed
+border and a caption naming the source — never as the card's own **Est. Value**:
+
+- `Exact match · Arena Club 9.5 · 8AC 3902111` — same card, same company, same grade
+- `Nearest copy · Arena Club 8 · 8AC 3902120` — closest grade, no exact match available
+
+**`$0.00` means "not valued yet", not "worth nothing".** No card in the vault is genuinely worth
+zero, so `priced()` in `card-match.js` blanks any non-positive value before it leaves the API, and
+the front end independently refuses to display or borrow one. Without this, a repack run where
+every copy sits at `$0.00` would show "Est. Value $0" and offer "$0" to its twins as a confident
+exact match. Sub-dollar values like `$0.50` are unaffected.
+
+If `$0.00` and "reviewed, declined to value" are meant to be different states, they need to be
+distinguishable in the column — right now every consumer of 30460 sees them identically.
 
 ## Other panel behaviour
 - Values are shown exactly as the source supplies them. `polishCard()` only fills blanks — a
