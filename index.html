@@ -1297,12 +1297,19 @@ function pickSibling(siblings, company, grade){
 // sport resolution, the system Set ID lookup and insert/subset mapping entirely.
 async function settleIds(card){
   if(!card) return card;
-  if(!card.sport){
-    card.sport = resolveSport(card.category, card.set_name) || (await sportFromPlayer(card.player));
-  }
-  if(!card.set_id){ const si = await lookupSetIdInSystem(card); if(si){ card.set_id=si; card.set_id_source='system'; } }
-  if(card.insert && !card.insert_id){ const ii = await lookupInsertId(card); if(ii){ card.insert_id=ii; card.insert_id_matched=true; } }
-  if(card.subset && !card.subset_id){ const s2 = await lookupSubsetId(card); if(s2) card.subset_id=s2; }
+  // These three are independent of each other, so they go out together rather than one after
+  // another — sequentially they were three full round trips on every single lookup.
+  const jobs = [];
+  if(!card.set_id) jobs.push(lookupSetIdInSystem(card).then(v=>{ if(v){ card.set_id=v; card.set_id_source='system'; } }));
+  if(card.insert && !card.insert_id) jobs.push(lookupInsertId(card).then(v=>{ if(v){ card.insert_id=v; card.insert_id_matched=true; } }));
+  if(card.subset && !card.subset_id) jobs.push(lookupSubsetId(card).then(v=>{ if(v) card.subset_id=v; }));
+  if(jobs.length) await Promise.all(jobs);
+
+  // Sport costs a query, and it's only needed to guard the *registry* Set ID lookup. If the Set ID
+  // is already known there's nothing to guard, so skip it — that's the common case.
+  if(!card.sport) card.sport = resolveSport(card.category, card.set_name);   // free, no network
+  if(!card.sport && !card.set_id) card.sport = await sportFromPlayer(card.player);
+
   polishCard(card);      // registry fallback for Set ID, parallel mirror
   return card;
 }
@@ -1335,13 +1342,7 @@ let apiBuild = null;
 function noteApiBuild(d){ if(d && d.build) apiBuild = d.build; }
 function apiStale(){ return apiBuild && apiBuild !== APP_BUILD; }
 
-async function mbLookup(params){
-  try{
-    const r=await fetch('/api/card-match?'+new URLSearchParams(params).toString(),{headers:chHeaders()});
-    if(r.ok){ const d=await r.json(); noteApiBuild(d); if(d && d.card) return d.card; }
-  }catch(e){}
-  return null;
-}
+async function mbLookup(params){ const rows = await mbFetch(params); return rows[0] || null; }
 
 // Resolution order when the cert itself isn't in our system:
 //   tier 2 — same card, same grading company AND same grade. That's the same slab class,
@@ -1351,13 +1352,25 @@ async function mbLookup(params){
 // Returns {tier, row}; tier 0 means nothing in our system matched.
 // Ask for every copy of the card, not one row. /api/card-match returns the chosen row plus its
 // siblings, which together are all copies of that SKU.
-async function mbLookupAll(params){
-  try{
-    const r=await fetch('/api/card-match?'+new URLSearchParams(params).toString(),{headers:chHeaders()});
-    if(r.ok){ const d=await r.json(); noteApiBuild(d); if(d && d.card) return [d.card].concat(d.siblings||[]); }
-  }catch(e){}
-  return [];
+// One promise per distinct query for the life of the page. Repeats — and identical calls fired
+// concurrently — share a single round trip instead of each paying full latency.
+const mbCache = new Map();
+const mbKey = params => params.slice().map(p=>p[0]+'\u0001'+p[1]).sort().join('\u0002');
+function mbFetch(params){
+  const k = mbKey(params);
+  if(mbCache.has(k)) return mbCache.get(k);
+  const pr = (async()=>{
+    try{
+      const r=await fetch('/api/card-match?'+new URLSearchParams(params).toString(),{headers:chHeaders()});
+      if(r.ok){ const d=await r.json(); noteApiBuild(d); if(d && d.card) return [d.card].concat(d.siblings||[]); }
+    }catch(e){}
+    return [];
+  })();
+  mbCache.set(k, pr);
+  if(mbCache.size > 200) mbCache.delete(mbCache.keys().next().value);
+  return pr;
 }
+async function mbLookupAll(params){ return mbFetch(params); }
 
 // Every copy of this card our system knows about. No status/component filtering is applied —
 // a sold, archived or in-process copy is just as valid a source for a value as a vaulted one.
@@ -1764,6 +1777,12 @@ async function doLookup(matchUrl, q){
   const certForCH = card ? String(card.cert||'').replace(/\D/g,'') : String(q).replace(/\D/g,'');
   const grader = chGraderFor(card, $('graderSel')&&$('graderSel').value);
 
+  // Card Hedger is an external API and usually the slowest leg. Start it now so it runs while we
+  // do the sibling and ID work below, instead of waiting for our queries to finish first.
+  const salesPromise = (certForCH && grader)
+    ? fetch('/api/card-sales?cert_number='+encodeURIComponent(certForCH)+'&grader='+encodeURIComponent(grader),{headers:chHeaders()}).catch(()=>null)
+    : null;
+
   // Fill from sibling copies using the record's own company and grade. This has to happen before
   // the Card Hedger gate below, or an Arena Club card — which never reaches Card Hedger — would
   // render with only whatever its own row contained. A stub with no real grade is the exception:
@@ -1800,8 +1819,8 @@ async function doLookup(matchUrl, q){
     return;
   }
   try{
-    const r2=await fetch('/api/card-sales?cert_number='+encodeURIComponent(certForCH)+'&grader='+encodeURIComponent(grader),{headers:chHeaders()});
-    if(r2.ok){
+    const r2=await salesPromise;
+    if(r2 && r2.ok){
       const s=await r2.json();
       // Cert collision check: if Card Hedger's record describes a different card, drop it.
       const chMismatch = !!(card && s.card && !sameCard(card, s.card));

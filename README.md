@@ -91,6 +91,24 @@ move its line — the array order is the render order.
 Field mapping lives in `normalizeCard()` in `api/card-match.js`; add key aliases there if a
 field ever shows blank.
 
+## Speed
+A lookup used to make up to **nine sequential round trips** — the cert match, Card Hedger, then
+`settleIds` firing sport / Set ID / insert ID / subset ID one after another, then the value hunt.
+At ~700ms each that's the 5–10s wait. Three changes:
+
+- **`settleIds` runs its queries in parallel.** Set ID, insert ID and subset ID don't depend on
+  each other, so they go out together: 4 sequential calls became 1 batch.
+- **Sport is only resolved when it's needed.** It costs a query and exists solely to guard the
+  *registry* Set ID lookup — if the Set ID is already known there's nothing to guard, so it's
+  skipped. That's the common case.
+- **Every `/api/card-match` query is cached and de-duplicated** for the life of the page
+  (`mbFetch`), so repeats and concurrent identical calls share one round trip.
+- **Card Hedger starts immediately** rather than after our Metabase work, so the slowest leg
+  overlaps the rest instead of queueing behind it.
+
+Simulated at 700ms per round trip, `settleIds` went from 2800ms to 701ms cold and 0ms warm.
+Batch mode already runs a 4-worker pool and benefits from the shared cache.
+
 ## Sibling copies come free with the lookup
 A cert lookup against 30460 returns the matched row **plus every other copy of the same card**.
 `sameSku()` treats a **matching** `subset_id` as proof, but a **mismatch is not a veto** — copies of
