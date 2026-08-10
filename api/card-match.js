@@ -43,7 +43,7 @@ function normalizeCard(o, certFallback) {
     set_name: pick(o,'setname','set')||'',
     set_id: pick(o,'setid')||'',
     subset_id: pick(o,'subsetid')||'',
-    subset: pick(o,'subset','settype')||'',
+    subset: pick(o,'subsetname','subset','settype')||'',
     insert: pick(o,'insertname','insert')||'',
     insert_id: pick(o,'insertid')||'',
     extra: pick(o,'extra')||'',

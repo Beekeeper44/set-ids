@@ -1126,7 +1126,8 @@ function detectParallel(variant){
 // Only fills what Metabase left blank — it never rewrites a value the source supplied.
 function polishCard(c){
   if(!c) return c;
-  if(!c.set_id){ const found=lookupSetId(c); if(found) c.set_id=found; }
+  if(!c.set_id){ const found=lookupSetId(c); if(found){ c.set_id=found; c.set_id_source=c.set_id_source||'registry'; } }
+  if(!c.set_id){ const byName=setIdFromName(c); if(byName){ c.set_id=byName; c.set_id_source='set name'; } }
   if(!c.parallel){ const p=detectParallel(c.variant); if(p) c.parallel=p; }
   return c;
 }
@@ -1324,26 +1325,35 @@ function pickSibling(siblings, company, grade){
 // Resolve the sport, then map names → IDs against our own tables. Called on EVERY exit path:
 // an Arena Club card never reaches Card Hedger, and if this lived in that branch it would skip
 // sport resolution, the system Set ID lookup and insert/subset mapping entirely.
-async function settleIds(card){
+async function settleIds(card, pool){
   if(!card) return card;
+  // The cert/8AC lookup already returned every copy of this card, and each row carries set_id,
+  // insert_id and subset_id. Read them from what we have before spending another query — at
+  // ~13s per call to 30460, the difference is a lookup that feels instant vs one that doesn't.
+  // Safe because siblings are copies of the SAME card: same set, same insert, same subset.
+  const have = [card].concat(pool||[]);
+  const fromPool = f => { const hit = have.find(r => r && r[f]); return hit ? hit[f] : ''; };
+  if(!card.set_id){ const v=fromPool('set_id'); if(v){ card.set_id=v; card.set_id_source='siblings'; } }
+  if(!card.insert){ const v=fromPool('insert'); if(v) card.insert=v; }
+  if(card.insert && !card.insert_id){ const v=fromPool('insert_id'); if(v) card.insert_id=v; }
+  if(!card.subset){ const v=fromPool('subset'); if(v) card.subset=v; }
+  if(card.subset && !card.subset_id){ const v=fromPool('subset_id'); if(v) card.subset_id=v; }
+
   // These three are independent of each other, so they go out together rather than one after
   // another — sequentially they were three full round trips on every single lookup.
   const jobs = [];
   if(!card.set_id) jobs.push(lookupSetIdInSystem(card).then(v=>{ if(v){ card.set_id=v; card.set_id_source='system'; } }));
   if(card.insert && !card.insert_id) jobs.push(lookupInsertId(card).then(v=>{ if(v){ card.insert_id=v; card.insert_id_matched=true; } }));
   if(card.subset && !card.subset_id) jobs.push(lookupSubsetId(card).then(v=>{ if(v) card.subset_id=v; }));
+  // The name probe doesn't depend on the others, so it rides in the same round.
+  let byName = null;
+  if(!card.set_id || !card.insert_id) jobs.push(lookupByName(card).then(r=>{ byName = r; }));
   if(jobs.length) await Promise.all(jobs);
-
-  // Still missing IDs? The set name may contain the insert name rather than a set we know.
-  // Probe by name and take whatever that row can tell us.
-  if(!card.set_id || (!card.insert_id && !card.insert)){
-    const byName = await lookupByName(card);
-    if(byName){
-      if(!card.set_id && byName.set_id){ card.set_id = byName.set_id; card.set_id_source='name'; }
-      if(!card.insert && byName.insert){ card.insert = byName.insert; card.insert_from_name = true; }
-      if(!card.insert_id && byName.insert_id) card.insert_id = byName.insert_id;
-      if(!card.subset_id && byName.subset_id) card.subset_id = byName.subset_id;
-    }
+  if(byName){
+    if(!card.set_id && byName.set_id){ card.set_id = byName.set_id; card.set_id_source='name'; }
+    if(!card.insert && byName.insert){ card.insert = byName.insert; card.insert_from_name = true; }
+    if(!card.insert_id && byName.insert_id) card.insert_id = byName.insert_id;
+    if(!card.subset_id && byName.subset_id) card.subset_id = byName.subset_id;
   }
 
   // Sport costs a query, and it's only needed to guard the *registry* Set ID lookup. If the Set ID
@@ -1425,13 +1435,45 @@ function insertNameCandidate(card){
   if(t.length < 2) return '';                 // one word is too generic to probe with
   return t.join(' ');
 }
-// Returns a row whose insert name matches that remainder, carrying the IDs we're missing.
+// Returns a row whose insert OR subset name matches that remainder, carrying the IDs we're
+// missing. Both are tried because a card can be attached to the insert through admin.subsets with
+// ac."insert" left empty — which is exactly the Dark Phantasma case, where an insert_name probe
+// returns nothing while the cards plainly exist under that subset.
+// NOTE: subset_name requires a matching parameter on question 30460:
+//   [[AND LOWER(sub.name) ILIKE '%' || LOWER({{subset_name}}) || '%']]
 async function lookupByName(card){
   const cand = insertNameCandidate(card);
-  if(!cand) return null;
-  const rows = await mbLookupAll([['insert_name', cand]]);
-  if(!rows.length) return null;
-  return rows.find(r => r && (r.insert_id || r.set_id)) || null;
+  const named = [];
+  if(cand){ named.push([['insert_name',cand]]); named.push([['subset_name',cand]]); }
+  if(card.subset){ named.push([['subset_name',card.subset]]); named.push([['insert_name',card.subset]]); }
+  if(!named.length) return null;
+  const sets = await Promise.all(named.map(a => mbLookupAll(a)));
+  for(const rows of sets){
+    const hit = rows.find(r => r && (r.insert_id || r.set_id || r.subset_id));
+    if(hit) return hit;
+  }
+  return null;
+}
+
+// A set name that already carries the code maps to an ID mechanically:
+//   "2022 Pokemon SWSH JPN"  ->  "PKMN SWSH JPN 2022"
+// Guarded two ways so it can't invent IDs from prose: the remainder must be short code-like
+// tokens, and it must appear UPPERCASE in the original name. "2025 Panini Mosaic Football" has
+// "Panini Mosaic" in title case, so it's left to the registry (which knows it as FB PM).
+function setIdFromName(card){
+  if(!card || !card.set_name) return '';
+  const sport = card.sport || resolveSport(card.category, card.set_name);
+  const prefix = codeForSport(sport);
+  if(!prefix) return '';
+  const season = seasonOf(card.set_name);
+  if(!season) return '';
+  const drop = setTokens(card.category).concat(setTokens(sport));
+  const rest = setTokens(card.set_name).filter(t => drop.indexOf(t) < 0);
+  if(!rest.length || rest.length > 3) return '';
+  if(!rest.every(t => t.length <= 6)) return '';                  // prose, not a code
+  const raw = String(card.set_name);
+  if(!rest.every(t => new RegExp('\\b'+t.toUpperCase()+'\\b').test(raw))) return '';
+  return prefix + ' ' + rest.join(' ').toUpperCase() + ' ' + season;
 }
 
 // Ask our own data for an ID, trying several angles and taking the first that answers. Scanning
@@ -1439,9 +1481,12 @@ async function lookupByName(card){
 // sibling has it. Attempts share the query cache, so the player+number probe is fetched once and
 // reused across all three lookups.
 async function firstFieldFromSystem(field, attempts){
-  for(const params of attempts){
-    if(!params || !params.length) continue;
-    const rows = await mbLookupAll(params);
+  const live = (attempts||[]).filter(a => a && a.length);
+  if(!live.length) return '';
+  // All angles go out at once and the priority order is applied to the results. Awaiting them one
+  // at a time cost a full round trip per attempt — and each of these queries takes ~5s.
+  const results = await Promise.all(live.map(a => mbLookupAll(a)));
+  for(const rows of results){
     const hit = rows.find(r => r && r[field]);
     if(hit) return hit[field];
   }
@@ -1493,7 +1538,8 @@ async function allCopiesFromSystem(card, extra){
   if(insert) precise.push(['insert_name',insert]);
   if(parallel) precise.push(['parallel_name',parallel]);
   const tries = precise.length>base.length ? [precise, base] : [base];
-  for(const t of tries){ const rows = await mbLookupAll(t); if(rows.length) return rows; }
+  const sets = await Promise.all(tries.map(t => mbLookupAll(t)));   // one round, not one per try
+  for(const rows of sets){ if(rows.length) return rows; }
   return [];
 }
 
@@ -1947,7 +1993,7 @@ async function doLookup(matchUrl, q){
 
   if(!certForCH){
     if(card){
-      await settleIds(card);
+      await settleIds(card, siblings);
       if(!card.sales_note) card.sales_note='No third-party cert on this record, so there\u2019s nothing for Card Hedger to price.';
       renderCard(card, source);
       renderSales(card.sales||null, card.sales_note);
@@ -1957,7 +2003,7 @@ async function doLookup(matchUrl, q){
   if(!grader){
     // Record is graded by someone Card Hedger doesn't index (e.g. Arena Club) — asking
     // anyway would return whichever card happens to share that cert number.
-    if(card){ await settleIds(card); card.sales=null; card.sales_note=chSkipNote(card); renderCard(card, source); }
+    if(card){ await settleIds(card, siblings); card.sales=null; card.sales_note=chSkipNote(card); renderCard(card, source); }
     else showMatchState('notfound', q);
     return;
   }
@@ -2019,7 +2065,7 @@ async function doLookup(matchUrl, q){
         hadImg = noteImage(card, hadImg, 'sibling');
         if(s.card) fillBlanks(card, s.card);    // Card Hedger → image + anything still blank
         noteImage(card, hadImg, 'cardhedger');
-        await settleIds(card);
+        await settleIds(card, siblings);
         card.sales = s.sales||null;
         card.sales_note = chMismatch
           ? 'Card Hedger\u2019s '+grader+' cert '+certForCH+' is a different card, so its comps are hidden.'

@@ -102,6 +102,21 @@ missing, which is why 8AC 3902111 (the only Arena Club 9.5 carrying a value) was
 every other copy of that card — the seed-card exemption meant it appeared when searched directly
 and vanished otherwise.
 
+## Speed — read what you already have
+The cert/8AC lookup returns every copy of the card, and **each row already carries `set_id`,
+`insert_id` and `subset_id`**. `settleIds()` reads them straight out of that response before
+issuing anything. Siblings are copies of the same card, so their set, insert and subset are the
+same by definition — no inference involved.
+
+Measured at 30460's real 12.8s per call: with siblings in hand it's **0 extra queries, ~12ms**.
+Only a card with nothing to read from falls through to the network, and then every angle goes out
+in a single wave.
+
+30460 itself is now the whole cost. Worth noting the seed lookup uses
+`TRIM(c.number::text) ILIKE '%' || {{ac_number}} || '%'` — a leading-wildcard match can't use an
+index, so it scans. An exact `=` on `ac_number` (and `cert_number`) would likely take a large bite
+out of that 12.8s for every consumer of the question.
+
 ## Speed
 A lookup used to make up to **nine sequential round trips** — the cert match, Card Hedger, then
 `settleIds` firing sport / Set ID / insert ID / subset ID one after another, then the value hunt.
@@ -117,7 +132,13 @@ At ~700ms each that's the 5–10s wait. Three changes:
 - **Card Hedger starts immediately** rather than after our Metabase work, so the slowest leg
   overlaps the rest instead of queueing behind it.
 
-Simulated at 700ms per round trip, `settleIds` went from 2800ms to 701ms cold and 0ms warm.
+**Every attempt inside a lookup is fired concurrently too.** `firstFieldFromSystem()` used to await
+its angles one at a time — with three angles for Set ID and a ~5s Metabase question, that alone was
+15s. All angles now go out together and the priority order is applied to the *results*. Same for
+`allCopiesFromSystem()`, and the name probe rides in the same round.
+
+Measured at 5000ms per call, the whole of `settleIds` for a cold card is **7 distinct queries in one
+wave, 5.0s total** — sequentially the same work was 35s.
 Batch mode already runs a 4-worker pool and benefits from the shared cache.
 
 ## Sibling copies come free with the lookup
@@ -439,6 +460,25 @@ The registry matcher gained two things:
 - a **sport-prefix guard** — a Set ID whose prefix doesn't match the card's sport is rejected. Without
   it, "2020 Donruss Optic Football" matched Soccer's `Donruss Optic` and returned `SCR DONOP 2020`.
 
+## Cards attach to an insert through the SUBSET, not ac."insert"
+Question 30460 filters inserts with `LOWER(ac."insert") ILIKE …`, but cards are linked to an insert
+through `admin.subsets` (`sub.insert_id`), and `ac."insert"` is frequently empty. Searching
+`Insert Name: dark phantasma` returns **0 rows** even though the insert plainly has cards.
+
+Two additions to 30460 close it:
+
+```sql
+-- in the SELECT
+sub.name AS subset_name,
+
+-- in the WHERE
+[[AND LOWER(sub.name) ILIKE '%' || LOWER({{subset_name}}) || '%']]
+```
+
+`lookupByName()` already probes both `insert_name` and `subset_name`; the subset one is inert until
+that parameter exists. With it, the Dark Phantasma card resolves to `PKMN SWSH JPN 2022` / `s10a`
+/ its subset id in a single probe.
+
 ## Name probe — when the insert is hiding in the set name
 Metabase folds insert names into set names: `2022 Pokemon Japanese Dark Phantasma` is really the
 **SWSH JPN set** plus the **Dark Phantasma insert** (`s10a`). Neither the registry nor a set-name
@@ -451,6 +491,19 @@ filter is an `ILIKE '%…%'`, so a name probe works. The matching row supplies `
 
 A one-word remainder is too generic to probe with and is skipped. The probe only runs when
 something is still missing after the normal lookups.
+
+## Set ID straight from the set name
+When a set name already carries the code, the ID is mechanical:
+`2022 Pokemon SWSH JPN` → `PKMN SWSH JPN 2022` — sport prefix, code, year at the end.
+`setIdFromName()` does that as the last fallback, after the system lookup and the registry.
+
+Two guards stop it inventing IDs out of prose: the remainder must be at most three short tokens,
+and it must appear **UPPERCASE** in the original name. `2025 Panini Mosaic Football` has "Panini
+Mosaic" in title case, so it's left to the registry — which correctly knows it as `FB PM 2025`
+rather than the `FB PANINI MOSAIC 2025` a naive transform would produce.
+
+`card.set_id_source` records which route answered: `system`, `registry`, `name` (insert-name probe)
+or `set name` (this transform).
 
 ## Insert and Subset IDs
 `lookupSetIdInSystem()`, `lookupInsertId()` and `lookupSubsetId()` each try several angles and take
