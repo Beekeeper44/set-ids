@@ -113,9 +113,11 @@ and grade. That ordering matters: an Arena Club card never reaches Card Hedger (
 cert), so if enrichment sat inside that block it would render with only its own row — which is
 why one 8AC showed a full card and its identical twin showed almost nothing.
 
-The panel lists **Other copies in the vault** beneath the fields, with a checkbox per grading
-company + grade (`PSA 10`, `Arena Club 9.5`, `BGS 9.5`…). All are on by default; ticking a subset
-narrows the table. Chips are keyed through `canonCompany()` and a numeric grade, so `Beckett 9.5`
+The panel lists **Other copies in the vault** beneath the fields — only copies that actually carry
+an est. value, since an unvalued copy tells you nothing here. Chip counts reflect valued copies
+only, so they'll read lower than the raw copy count. There's a checkbox per grading
+company + grade (`PSA 10`, `Arena Club 9.5`, `BGS 9.5`…). All are on by default, with **select all** / **deselect all**; deselecting
+everything genuinely empties the table rather than reverting to all. Chips are keyed through `canonCompany()` and a numeric grade, so `Beckett 9.5`
 and `BGS 9.5` collapse into one. Filtering affects the table only — the suggested value above is
 unchanged.
 
@@ -382,9 +384,33 @@ Choosing the copy that best *describes* the card and finding a *value* are separ
 step, so when the best-matching copy happened to be unvalued the search stopped there and the
 panel showed no value even though other copies had one.
 
-`findValuedCopy()` looks at the copies already returned with the lookup, then widens to the rest
-of the system via `allCopiesFromSystem()`, preferring same company + same grade and falling back
-to nearest grade.
+`findValuedCopy()` looks for an **exact** company+grade match first — in the copies returned with
+the lookup, then across the rest of the system via `allCopiesFromSystem()` — and only accepts a
+nearest-grade stand-in once both have come up empty. Stopping at the first valued copy in hand
+gave an Arena Club 9.5 a CSG 9.5's $15 while its own Arena Club 9.5 twin sat at $25, absent from
+the sibling set but one query away.
+
+The chip filter resets on every new card (`lastCardKey`). Carrying a previous selection over meant
+a lookup could land showing one row, or none, for no visible reason.
+
+## Valuation dates
+The copies table orders newest-first, undated rows last. There is **one value column**: the date
+sits under the amount rather than in a column of its own — two adjacent headings ("Valued" and
+"Est. value") read as two different numbers. It reads
+`estimate_date`, normalised in `card-match.js` from explicit est-value timestamps only —
+`estimated_value_updated_at`, `valued_at`, `recomped_at` and similar.
+
+Source order: **`estimated_value_on`** first, then `estimated_value_at`. `updated_at` and
+`fmv_updated_at` are deliberately never used — the first moves on any row edit including a rescan,
+the second dates `fmv`, a different number. Dating a valuation with the wrong clock is worse than
+showing none, so a row with no usable date shows "—" and sorts last.
+
+`parseEstDate()` handles all three shapes 30460 emits, and reads the slash form as **US M/D/Y**:
+`04/07/2026` is 7 April, not 4 July. Trusting `Date.parse` with that string would have ordered
+those rows wrongly and silently. Display is normalised to `YYYY-MM-DD` to match the sales panel.
+
+The Est./Suggested Value caption also carries the date — "Exact match · Arena Club 9.5 ·
+8AC 3902111 · valued 2026-04-07" — so a borrowed number can be judged on age, not just grade.
 
 ## Suggested values
 A value taken from another copy is rendered as **Suggested Value** — its own label, a dashed

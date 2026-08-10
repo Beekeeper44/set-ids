@@ -55,6 +55,12 @@ function normalizeCard(o, certFallback) {
     tag: pick(o,'tag')||'',
     admin_url: pick(o,'url','adminurl')||'',
     estimate_value: pick(o,'estimatedvalue','estimate','estimatevalue','estvalue','estimatedprice','estimatedmarketvalue','marketvalue','valuation','value') ?? '',
+    // When the estimated value was last set. ONLY explicit est-value timestamps — never
+    // updated_at (any row edit bumps it) or fmv_updated_at (dates FMV, a different number).
+    // estimated_value_on first (the date the value was set), estimated_value_at as fallback.
+    // Never updated_at (any row edit bumps it) or fmv_updated_at (dates FMV, a different number).
+    estimate_date: pick(o,'estimatedvalueon','estimatedvalueat','estimatedvalueupdatedat',
+      'estvalueon','estvaluedate','estimatedvaluedate','valuedon','valuedat','recompedat')||'',
     image: pick(o,'frontslabpictureurl','slabpictureurl','frontpictureurl','pictureurl','imageurl','image','cardimage','frontimage','imagefront','img')||''
   };
 }

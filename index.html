@@ -259,13 +259,15 @@
   .sibwrap{margin-top:20px;padding-top:14px;border-top:1px solid rgba(255,255,255,.08)}
   .sibhead{font-family:'JetBrains Mono',monospace;font-size:12.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--green);margin-bottom:8px}
   .sibcount{opacity:.55;margin-left:6px}
-  .sibrow{display:grid;grid-template-columns:1.2fr .9fr 1.1fr .8fr;gap:12px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.05);font-size:13.5px;border-radius:6px}
+  .sibrow{display:grid;grid-template-columns:1.2fr .9fr 1.1fr .9fr;gap:12px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.05);font-size:13.5px;border-radius:6px}
   .sibrow span{font-family:'JetBrains Mono',monospace;color:#dfe9e3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .sibhdr{border-bottom:1px solid rgba(255,255,255,.12)}
   .sibhdr span{font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:#7d8c84}
   .sibrow.used{background:rgba(0,255,140,.07)}
   .sibrow.used .sibac{color:var(--green)}
   .sibval{text-align:right}
+  .sibwhen{display:block;font-style:normal;font-size:11px;color:#6d7d74;margin-top:2px}
+  .sibnote{padding:7px 10px;font-size:11.5px;color:#6d7d74;font-family:'JetBrains Mono',monospace}
   .sibmore{padding:8px 10px;font-size:12.5px;color:#7d8c84;font-family:'JetBrains Mono',monospace}
   .sibchips{display:flex;flex-wrap:wrap;gap:7px;margin:2px 0 12px}
   .sibchip{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid rgba(255,255,255,.14);
@@ -276,6 +278,12 @@
   .sibn{opacity:.55}
   .sibclear{margin-left:10px;font-size:12px;color:var(--green);cursor:pointer;text-transform:none;letter-spacing:0}
   .sibclear:hover{text-decoration:underline}
+  .sibacts{margin-left:auto;display:inline-flex;gap:8px}
+  .sibbtn{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.06em;text-transform:none;
+    padding:4px 10px;border-radius:999px;border:1px solid rgba(0,255,140,.35);background:transparent;
+    color:var(--green);cursor:pointer}
+  .sibbtn:hover{background:rgba(0,255,140,.10)}
+  .sibbtn.off{opacity:.35;cursor:default;border-color:rgba(255,255,255,.14);color:#7d8c84}
   .salechip{flex:1;min-width:82px;background:#0a0f0d;border:1px solid var(--border);border-radius:10px;padding:10px 12px}
   .sk{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#c7d4cc;font-family:'JetBrains Mono',monospace}
   .sv{font-size:19px;font-weight:800;color:var(--green);margin-top:3px;font-family:'JetBrains Mono',monospace}
@@ -1180,16 +1188,18 @@ const sibComboKey = s => canonCompany(s.grading_company||'') + '|' +
     ? parseFloat(String(s.grade).replace(/[^0-9.]/g,'')) : '');
 const sibComboLabel = s => (s.grade_display && String(s.grade_display).trim())
   || ((s.grading_company||'?')+' '+(s.grade||'?'));
+// null = everything (the default). A Set = exactly those keys, and an empty Set genuinely means
+// none — so "deselect all" clears the table instead of silently reverting to everything.
 function toggleSibFilter(key, on){
-  if(sibFilter===null){                       // first click: start from everything visible
-    sibFilter = new Set(lastSibKeys);
-  }
+  if(sibFilter===null) sibFilter = new Set(lastSibKeys);   // first click starts from all-on
   if(on) sibFilter.add(key); else sibFilter.delete(key);
-  if(sibFilter.size===0 || sibFilter.size===lastSibKeys.length) sibFilter=null;
+  if(sibFilter.size===lastSibKeys.length) sibFilter=null;
   if(lastCard) renderCard(lastCard, lastSource);
 }
-function resetSibFilter(){ sibFilter=null; if(lastCard) renderCard(lastCard, lastSource); }
-let lastSibKeys = [], lastCard = null, lastSource = '';
+function selectAllSibs(){ sibFilter=null; if(lastCard) renderCard(lastCard, lastSource); }
+function clearAllSibs(){ sibFilter=new Set(); if(lastCard) renderCard(lastCard, lastSource); }
+function resetSibFilter(){ selectAllSibs(); }
+let lastSibKeys = [], lastCard = null, lastSource = '', lastCardKey = '';
 
 // Choose among sibling copies the cert lookup already returned. Same company + same grade is
 // tier 2. Otherwise tier 3 takes the copy whose grade is *closest* to ours rather than the
@@ -1309,19 +1319,51 @@ async function allCopiesFromSystem(card, extra){
 }
 
 // A suggested value may come from ANY copy in the system carrying one, at any status — not just
-// from the copy chosen to describe the card. Prefers same company + same grade, then nearest.
+// from the copy chosen to describe the card. An *exact* company+grade match is worth going looking
+// for: settling for a nearest-grade copy that happens to be in hand gave an Arena Club 9.5 a CSG
+// 9.5's $15 while its own Arena Club 9.5 twin sat at $25 one query away.
 const isPriced = r => !!(r && r.estimate && Number(r.estimate.value)>0);
+// Sort valued copies newest-first. Rows with no date sort last rather than jumping to the top.
+// 30460 sends estimated_value_on as US M/D/YYYY ("04/07/2026" = 7 April) and estimated_value_at as
+// "Apr 7, 2026, 1:58 PM", so parse both explicitly rather than trusting Date.parse with the slash
+// form — read as D/M it would be 4 July, and the ordering would be quietly wrong.
+function parseEstDate(v){
+  const t = String(v==null?'':v).trim();
+  if(!t) return null;
+  const us = t.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);      // 04/07/2026 → M/D/Y
+  if(us) return new Date(Number(us[3]), Number(us[1])-1, Number(us[2]));
+  const iso = t.match(/^(\d{4})-(\d{2})-(\d{2})/);                  // 2026-04-07
+  if(iso) return new Date(Number(iso[1]), Number(iso[2])-1, Number(iso[3]));
+  const d = new Date(t);                                            // "Apr 7, 2026, 1:58 PM"
+  return isFinite(d.getTime()) ? d : null;
+}
+const pad2 = n => (n<10?'0':'')+n;
+const estTime = r => { const d=parseEstDate(r&&r.estimate_date); return d?d.getTime():-Infinity; };
+const estDay  = r => { const d=parseEstDate(r&&r.estimate_date);
+  return d ? (d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())) : '\u2014'; };
 async function findValuedCopy(card, extra, pool){
   const ownGrade = hasRealGrade(card);
   const company = (ownGrade && card && card.grading_company) ? card.grading_company
                 : (extra && extra.grading_company) || (card && card.grading_company) || '';
   const grade   = ownGrade ? card.grade
                 : (extra && hasRealGrade(extra) ? extra.grade : '');
-  let p = pickSibling((pool||[]).filter(isPriced), company, grade);
-  if(p.row) return p;
-  const rows = await allCopiesFromSystem(card, extra);
-  p = pickSibling(rows.filter(isPriced), company, grade);
-  return p.row ? p : {tier:0, row:null};
+
+  const inHand = (pool||[]).filter(isPriced);
+  const exactInHand = pickSibling(inHand, company, grade);
+  if(exactInHand.row && exactInHand.tier===2) return exactInHand;
+
+  // Nothing exact in hand — ask the system before accepting a nearest-grade stand-in.
+  const wider = (await allCopiesFromSystem(card, extra)).filter(isPriced);
+  const exactWider = pickSibling(wider, company, grade);
+  if(exactWider.row && exactWider.tier===2) return exactWider;
+
+  const seen = {};
+  const combined = inHand.concat(wider).filter(r=>{
+    const k = idKeyJS(r.ac_number) || idKeyJS(r.cert);
+    if(!k || seen[k]) return false; seen[k]=1; return true;
+  });
+  const near = pickSibling(combined, company, grade);
+  return near.row ? near : (exactInHand.row ? exactInHand : {tier:0, row:null});
 }
 
 async function resolveFromSystem(card, extra){
@@ -1378,6 +1420,7 @@ function applyEstimate(c, row, tier){
     c.estimate=row.estimate; c.estimate_from='sibling'; c.estimate_tier=tier;
     c.estimate_grade=row.grade_display||'';
     c.estimate_ac=row.ac_number||''; c.estimate_cert=row.cert||'';
+    c.estimate_date_src=row.estimate_date||'';     // when that copy was valued
   }
   return c;
 }
@@ -1460,6 +1503,10 @@ function renderSales(sales, note){
 }
 
 function renderCard(c, source, demo){
+  // A new card starts with every chip on. Carrying a previous card's selection over meant a
+  // lookup could land showing one row, or none, for no visible reason.
+  const cardKey = idKeyJS(c && c.ac_number) + '|' + idKeyJS(c && c.cert);
+  if(cardKey !== lastCardKey){ sibFilter = null; lastCardKey = cardKey; }
   lastCard=c; lastSource=source;
   $('matchEmpty').hidden=true; $('matchResult').hidden=false;
   const b=$('matchBatch'); if(b) b.hidden=true;
@@ -1496,9 +1543,11 @@ function renderCard(c, source, demo){
   const borrowed = c.estimate_from==='sibling';
   const estFrom = c.estimate_ac ? ('8AC '+c.estimate_ac) : (c.estimate_cert ? ('cert '+c.estimate_cert) : 'another copy');
   const estLabel = borrowed ? 'Suggested Value' : 'Est. Value';
-  const estSub = !borrowed ? 'Arena Club'
-    : (c.estimate_tier===2 ? 'Exact match · '+(c.estimate_grade||'same grade')+' · '+estFrom
-                           : 'Nearest copy · '+(c.estimate_grade||'other grade')+' · '+estFrom);
+  const estWhen = borrowed ? estDay({estimate_date:c.estimate_date_src}) : estDay(c);
+  const estAge = estWhen!=='\u2014' ? ' · valued '+estWhen : '';
+  const estSub = !borrowed ? ('Arena Club'+estAge)
+    : (c.estimate_tier===2 ? 'Exact match · '+(c.estimate_grade||'same grade')+' · '+estFrom+estAge
+                           : 'Nearest copy · '+(c.estimate_grade||'other grade')+' · '+estFrom+estAge);
   if(mbVal!=='') boxes.push({label:estLabel, val:money(mbVal), sub:estSub, logo:AC_LOGO, suggested:borrowed});
   else boxes.push({label:'Est. Value', val:'No Est Value', sub:'Arena Club', logo:AC_LOGO, small:true});
   const rc = c.sales && c.sales.recent && c.sales.recent[0];
@@ -1525,7 +1574,7 @@ function renderCard(c, source, demo){
     if(!s || !(s.ac_number||s.cert)) return false;
     if(selfAc && idKeyJS(s.ac_number)===selfAc) return false;
     if(selfCert && idKeyJS(s.cert)===selfCert) return false;
-    return true;
+    return isPriced(s);          // a copy with no value tells you nothing here
   });
   if(sibs.length){
     const used = c.estimate_ac||'';
@@ -1548,23 +1597,39 @@ function renderCard(c, source, demo){
       '<label class="sibchip'+(active(x.key)?' on':'')+'">'
       +'<input type="checkbox" '+(active(x.key)?'checked':'')+' onchange="toggleSibFilter('+JSON.stringify(x.key).replace(/"/g,'&quot;')+', this.checked)">'
       +esc(x.label)+'<span class="sibn">'+x.n+'</span></label>').join('');
-    const clear = sibFilter!==null ? '<span class="sibclear" onclick="resetSibFilter()">show all</span>' : '';
+    const allOn = sibFilter===null;
+    const noneOn = sibFilter!==null && sibFilter.size===0;
+    const clear = '<span class="sibacts">'
+      + '<button class="sibbtn'+(allOn?' off':'')+'" onclick="selectAllSibs()"'+(allOn?' disabled':'')+'>select all</button>'
+      + '<button class="sibbtn'+(noneOn?' off':'')+'" onclick="clearAllSibs()"'+(noneOn?' disabled':'')+'>deselect all</button>'
+      + '</span>';
 
-    const rowsHtml = shown.slice(0,25).map(s2=>{
+    const ordered = shown.slice().sort((x,y)=>{
+      const d = estTime(y)-estTime(x);                       // most recent first
+      if(d) return d;
+      return (Number(y.estimate&&y.estimate.value)||0)-(Number(x.estimate&&x.estimate.value)||0);
+    });
+    const anyDated = ordered.some(r=>estTime(r)>-Infinity);
+    const rowsHtml = ordered.slice(0,25).map(s2=>{
       const val = (s2.estimate && Number(s2.estimate.value)>0) ? money(s2.estimate.value) : '—';
+      const d2 = estDay(s2);
       const isUsed = used && String(s2.ac_number)===String(used);
       return '<div class="sibrow'+(isUsed?' used':'')+'">'
         +'<span class="sibac">'+esc(s2.ac_number||'—')+'</span>'
         +'<span class="sibgrade">'+esc(sibComboLabel(s2))+'</span>'
         +'<span class="sibcert">'+esc(s2.cert||'—')+'</span>'
-        +'<span class="sibval">'+esc(val)+'</span></div>';
+        +'<span class="sibval">'+esc(val)
+          +(d2!=='—' ? '<em class="sibwhen">'+esc(d2)+'</em>' : '')+'</span></div>';
     }).join('');
 
     sibHtml='<div class="sibwrap"><div class="sibhead">Other copies in the vault '
       +'<span class="sibcount">'+shown.length+(shown.length!==sibs.length?(' of '+sibs.length):'')+'</span>'+clear+'</div>'
       +'<div class="sibchips">'+chips+'</div>'
-      +'<div class="sibrow sibhdr"><span>8AC</span><span>Grade</span><span>Cert</span><span>Est. value</span></div>'
-      +(shown.length?rowsHtml:'<div class="sibmore">nothing matches that filter</div>')
+      +'<div class="sibrow sibhdr"><span>8AC</span><span>Grade</span><span>Cert</span>'
+      +'<span>Est. value</span></div>'
+      +(anyDated?'':'<div class="sibnote">no valuation dates in 30460 &mdash; ordered by value</div>')
+      +(shown.length ? rowsHtml
+        : '<div class="sibmore">'+(noneOn?'nothing selected':'nothing matches that filter')+'</div>')
       +(shown.length>25?'<div class="sibmore">+'+(shown.length-25)+' more</div>':'')+'</div>';
   }
   $('matchCard').innerHTML=
