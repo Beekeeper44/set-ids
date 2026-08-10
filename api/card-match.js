@@ -9,7 +9,7 @@ const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 // Bumped whenever this file changes. Returned on every response so the page can tell you when the
 // API is older than itself — several fixes here are server-side only, and a static refresh leaves
 // them behind silently.
-const BUILD = '2026-08-10-debug-rows';
+const BUILD = '2026-08-10-status';
 const pick = (o, ...targets) => {
   if (!o) return '';
   const keys = Object.keys(o);
@@ -34,6 +34,7 @@ function normalizeCard(o, certFallback) {
   return {
     category: pick(o,'category','sport')||'',
     ac_number: pick(o,'acnumber','ac','8ac','ac_number')||'',
+    status: pick(o,'status','cardstatus')||'',
     language: pick(o,'language','lang')||'',
     cert: String(pick(o,'certnumber','cert','certno')||certFallback||''),
     grade: grade||'',

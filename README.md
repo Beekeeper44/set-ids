@@ -91,6 +91,17 @@ move its line — the array order is the render order.
 Field mapping lives in `normalizeCard()` in `api/card-match.js`; add key aliases there if a
 field ever shows blank.
 
+## Status is carried through and shown
+`status` comes back on every row and gets its own sortable column in the copies table. It matters
+because 30460 filters on it — a copy outside the allowed statuses simply won't be in the response,
+and without the column that looks like the copy doesn't exist. Blank statuses sort last in both
+directions.
+
+Question 30460's status list must include every status you want to see. `pending_release` was
+missing, which is why 8AC 3902111 (the only Arena Club 9.5 carrying a value) was invisible from
+every other copy of that card — the seed-card exemption meant it appeared when searched directly
+and vanished otherwise.
+
 ## Speed
 A lookup used to make up to **nine sequential round trips** — the cert match, Card Hedger, then
 `settleIds` firing sport / Set ID / insert ID / subset ID one after another, then the value hunt.

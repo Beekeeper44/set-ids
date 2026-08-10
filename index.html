@@ -259,7 +259,7 @@
   .sibwrap{margin-top:20px;padding-top:14px;border-top:1px solid rgba(255,255,255,.08)}
   .sibhead{font-family:'JetBrains Mono',monospace;font-size:12.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--green);margin-bottom:8px}
   .sibcount{opacity:.55;margin-left:6px}
-  .sibrow{display:grid;grid-template-columns:1fr .8fr 1fr 1fr .8fr;gap:12px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.05);font-size:13.5px;border-radius:6px}
+  .sibrow{display:grid;grid-template-columns:.95fr .75fr .95fr .95fr .95fr .75fr;gap:12px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.05);font-size:13.5px;border-radius:6px}
   .sibrow span{font-family:'JetBrains Mono',monospace;color:#dfe9e3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .sibhdr{border-bottom:1px solid rgba(255,255,255,.12)}
   .sibhdr span{font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:#7d8c84}
@@ -267,6 +267,7 @@
   .sibrow.used .sibac{color:var(--green)}
   .sibval{text-align:right}
   .sibdate{color:#93a49b}
+  .sibstatus{color:#93a49b;text-transform:lowercase}
   .sibth{cursor:pointer;user-select:none}
   .sibth:hover{color:#cfe0d7}
   .sibth.on{color:var(--green)}
@@ -287,6 +288,19 @@
     border-radius:10px;background:rgba(255,150,60,.08);color:#ffcf9b;
     font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.6}
   .apistale b{color:#ffe2c2}
+  .sibdiag{margin-left:12px;font-size:11.5px;color:#7d8c84;cursor:pointer;text-transform:none;letter-spacing:0;text-decoration:underline dotted}
+  .sibdiag:hover{color:var(--green)}
+  .diagbox{position:relative;margin:10px 0 12px;padding:11px 13px;border:1px solid rgba(255,255,255,.14);
+    border-radius:10px;background:rgba(255,255,255,.03);font-family:'JetBrains Mono',monospace;
+    font-size:12px;color:#c7d4cc;line-height:1.7}
+  .diagbox b{color:#fff}
+  .diagrow{margin-top:8px;display:flex;gap:8px;align-items:center}
+  .diaginput{background:#0b100e;border:1px solid rgba(255,255,255,.18);border-radius:6px;color:#dfe9e3;
+    font-family:'JetBrains Mono',monospace;font-size:12px;padding:5px 9px;width:150px}
+  .diagverdict{margin-top:8px;padding:7px 9px;border-radius:7px;background:rgba(0,255,140,.07);color:#bff0d4}
+  .diagsmall{margin-top:6px;font-size:11px;color:#6d7d74;word-break:break-all}
+  .diagx{position:absolute;top:9px;right:12px;font-size:11px;color:#7d8c84;cursor:pointer}
+  .diagx:hover{color:#cfe0d7}
   .sibcos{margin-bottom:8px}
   .sibco{border-color:rgba(255,255,255,.22);font-weight:700;letter-spacing:.05em}
   .sibco.part{border-color:rgba(0,255,140,.35);color:#cfe0d7;background:rgba(0,255,140,.03)}
@@ -879,7 +893,7 @@ const FIELD_DEFS=[
 
 function fillBlanks(t, s){
   if(!t||!s) return;
-  ['category','language','grade','grade_display','grading_company','set_name','set_id','subset','subset_id','insert','insert_id','extra','player','card_no','variant','full_art','rarity','edition','parallel','parallel_total','image'].forEach(k=>{
+  ['category','language','grade','grade_display','grading_company','set_name','set_id','subset','subset_id','insert','insert_id','extra','player','card_no','variant','full_art','rarity','edition','parallel','parallel_total','image','status'].forEach(k=>{
     if((t[k]===''||t[k]==null) && s[k]!==''&&s[k]!=null) t[k]=s[k];
   });
 }
@@ -1245,6 +1259,8 @@ function setSibSort(key){
   if(lastCard) renderCard(lastCard, lastSource);
 }
 function setSibDays(n){ sibDays = (sibDays===n ? 0 : n); if(lastCard) renderCard(lastCard, lastSource); }
+const SIB_TEXT_KEYS = { status:1 };
+const sibSortText = (r,key) => String((key==='status' ? r.status : '') || '').toLowerCase();
 const sibSortVal = (r,key) => {
   if(key==='date')  return estTime(r);
   if(key==='value') return Number(r.estimate && r.estimate.value) || 0;
@@ -1337,7 +1353,7 @@ async function lookupSubsetId(card){
 
 // Must match BUILD in api/card-match.js. When the API reports something older, the page says so
 // instead of quietly behaving like an old build.
-const APP_BUILD = '2026-08-10-debug-rows';
+const APP_BUILD = '2026-08-10-status';
 let apiBuild = null;
 function noteApiBuild(d){ if(d && d.build) apiBuild = d.build; }
 function apiStale(){ return apiBuild && apiBuild !== APP_BUILD; }
@@ -1352,6 +1368,35 @@ async function mbLookup(params){ const rows = await mbFetch(params); return rows
 // Returns {tier, row}; tier 0 means nothing in our system matched.
 // Ask for every copy of the card, not one row. /api/card-match returns the chosen row plus its
 // siblings, which together are all copies of that SKU.
+// Answers "why isn't copy X here?" without leaving the panel: re-asks the same query with
+// debug on and reports whether an 8AC was absent from 30460's response or present and grouped out.
+let sibDiag = null;
+async function diagnoseSiblings(){
+  if(!lastMatchUrl) return;
+  sibDiag = {loading:true};
+  if(lastCard) renderCard(lastCard, lastSource);
+  try{
+    const url = lastMatchUrl + (lastMatchUrl.indexOf('?')>=0 ? '&' : '?') + 'debug=1';
+    const r = await fetch(url, {headers:chHeaders()});
+    const d = r.ok ? await r.json() : null;
+    sibDiag = (d && d.debug) ? {d:d.debug, build:d.build} : {error:'no debug in response'};
+  }catch(e){ sibDiag = {error:String(e && e.message || e)}; }
+  if(lastCard) renderCard(lastCard, lastSource);
+}
+function closeDiag(){ sibDiag=null; if(lastCard) renderCard(lastCard, lastSource); }
+function probeAc(v){
+  const want = idKeyJS(v);
+  if(!want || !sibDiag || !sibDiag.d) return;
+  const d = sibDiag.d;
+  const inRows = (d.returned_ac_numbers||[]).some(a=>idKeyJS(a)===want);
+  const inSibs = (d.sibling_ac_numbers||[]).some(a=>idKeyJS(a)===want);
+  sibDiag.probe = { ac:v, inRows, inSibs,
+    verdict: !inRows ? 'not returned by 30460 for this lookup \u2014 the row never reaches the app'
+           : (inSibs ? 'returned and grouped in \u2014 it should be in the table above'
+                     : 'returned but grouped out \u2014 this one is the app\u2019s fault') };
+  if(lastCard) renderCard(lastCard, lastSource);
+}
+
 // One promise per distinct query for the life of the page. Repeats — and identical calls fired
 // concurrently — share a single round trip instead of each paying full latency.
 const mbCache = new Map();
@@ -1698,12 +1743,43 @@ function renderCard(c, source, demo){
       +esc(x.label)+'<span class="sibn">'+x.n+'</span></label>').join('');
     const allOn = sibFilter===null;
     const noneOn = sibFilter!==null && sibFilter.size===0;
+    const diagLink = '<span class="sibdiag" onclick="diagnoseSiblings()">why is a copy missing?</span>';
+    let diagHtml = '';
+    if(sibDiag){
+      if(sibDiag.loading) diagHtml = '<div class="diagbox">checking\u2026</div>';
+      else if(sibDiag.error) diagHtml = '<div class="diagbox">Couldn\u2019t read the debug block ('+esc(sibDiag.error)+').'
+        +' If the API predates <b>2026-08-10-debug-rows</b>, redeploy <b>api/card-match.js</b>.'
+        +'<span class="diagx" onclick="closeDiag()">close</span></div>';
+      else {
+        const d = sibDiag.d;
+        const go = (d.grouped_out||[]);
+        diagHtml = '<div class="diagbox">'
+          +'<div><b>'+(d.row_count||0)+'</b> rows returned by 30460 &nbsp;·&nbsp; <b>'+(d.matched_count||0)+'</b> matched the filter'
+          +' &nbsp;·&nbsp; <b>'+(d.sibling_count||0)+'</b> grouped as copies'
+          +(go.length?(' &nbsp;·&nbsp; <b>'+go.length+'</b> returned but grouped out'):'')+'</div>'
+          +'<div class="diagrow">check an 8AC: <input class="diaginput" placeholder="3902111" '
+          +'onkeydown="if(event.key===\'Enter\')probeAc(this.value)"> <button class="sibbtn" '
+          +'onclick="probeAc(this.previousElementSibling.value)">check</button></div>'
+          +(sibDiag.probe ? '<div class="diagverdict"><b>'+esc(sibDiag.probe.ac)+'</b> \u2014 '+esc(sibDiag.probe.verdict)+'</div>' : '')
+          +(go.length ? '<div class="diagsmall">grouped out: '+esc(go.slice(0,40).join(', '))+'</div>' : '')
+          +'<span class="diagx" onclick="closeDiag()">close</span></div>';
+      }
+    }
     const clear = '<span class="sibacts">'
       + '<button class="sibbtn'+(allOn?' off':'')+'" onclick="selectAllSibs()"'+(allOn?' disabled':'')+'>select all</button>'
       + '<button class="sibbtn'+(noneOn?' off':'')+'" onclick="clearAllSibs()"'+(noneOn?' disabled':'')+'>deselect all</button>'
       + '</span>';
 
     const ordered = shown.slice().sort((x,y)=>{
+      if(SIB_TEXT_KEYS[sibSort.key]){
+        const sa=sibSortText(x,sibSort.key), sb=sibSortText(y,sibSort.key);
+        if(sa!==sb){
+          if(!sa) return 1; if(!sb) return -1;          // blank status last either way
+          return (sa<sb?-1:1)*sibSort.dir;
+        }
+        const dd=estTime(y)-estTime(x); if(dd) return dd;
+        return (Number(y.estimate&&y.estimate.value)||0)-(Number(x.estimate&&x.estimate.value)||0);
+      }
       const a=sibSortVal(x,sibSort.key), b=sibSortVal(y,sibSort.key);
       if(a===b || (!isFinite(a)&&!isFinite(b))){                 // tie → newest, then dearest
         const d=estTime(y)-estTime(x); if(d) return d;
@@ -1730,17 +1806,19 @@ function renderCard(c, source, demo){
         +'<span class="sibac">'+esc(s2.ac_number||'—')+'</span>'
         +'<span class="sibgrade">'+esc(sibComboLabel(s2))+'</span>'
         +'<span class="sibcert">'+esc(s2.cert||'—')+'</span>'
+        +'<span class="sibstatus">'+esc(String(s2.status||'—').replace(/_/g,' '))+'</span>'
         +'<span class="sibdate">'+esc(d2)+'</span>'
         +'<span class="sibval">'+esc(val)+'</span></div>';
     }).join('');
 
     sibHtml='<div class="sibwrap"><div class="sibhead">Other copies in the vault '
       +'<span class="sibcount">'+shown.length+(shown.length!==sibs.length?(' of '+sibs.length):'')
-      +(sibDays?(' · last '+sibDays+'d'):'')+'</span>'+clear+'</div>'
+      +(sibDays?(' · last '+sibDays+'d'):'')+'</span>'+diagLink+clear+'</div>'
+      +diagHtml
       +(cos.length>1 ? '<div class="sibchips sibcos">'+coChips+'</div>' : '')
       +'<div class="sibchips">'+chips+dayBar+'</div>'
       +'<div class="sibrow sibhdr">'+th('ac','8AC')+th('grade','Grade')+th('cert','Cert')
-      +th('date','Last est value date')+th('value','Est. value')+'</div>'
+      +th('status','Status')+th('date','Last est value date')+th('value','Est. value')+'</div>'
       +(anyDated?'':'<div class="sibnote">no valuation dates in 30460 &mdash; ordered by value</div>')
       +(shown.length ? rowsHtml
         : '<div class="sibmore">'+(noneOn?'nothing selected'
@@ -1760,7 +1838,9 @@ function renderCard(c, source, demo){
 
 function renderSalesLoading(){ const el=$('matchSales'); if(el) el.innerHTML='<div class="salehead">Recent sales <span class="salesrc"><img class="chlogo" src="'+CH_LOGO+'" alt="">Card Hedger</span></div><div class="salesempty">Loading comps\u2026</div>'; }
 
+let lastMatchUrl = '';
 async function doLookup(matchUrl, q){
+  lastMatchUrl = matchUrl;
   showMatchState('loading', q);
   let card=null, source='metabase', siblings=[];
   try{
