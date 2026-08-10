@@ -987,7 +987,11 @@ async function sportFromPlayer(name){
 // "Scarlet & Violet Series", Metabase says "2023 Pokemon Scarlet & Violet".
 const SET_DESCRIPTORS = ['series','set','edition'];
 // For TCG the registry's "brand" column holds the language, not a manufacturer.
-const LANGUAGE_BRANDS = ['english','japan','japanese','chinese','china','germany','german','korea',
+// Language words that show up inside set names.
+const LANGUAGE_IN_NAME = ['japanese','japan','jpn','english','german','deutsch','french','francais',
+  'italian','italiano','spanish','espanol','korean','korea','chinese','china','portuguese','dutch',
+  'russian','thai','indonesian','taiwan'];
+const LANGUAGE_BRANDS = ['english','japan','japanese','chinese','china','korea','korean','germany','german','korea',
   'korean','france','french','italy','italian','spain','spanish','portuguese','brazil','dutch',
   'russian','thai','indonesian','taiwan'];
 // Strip only ONE trailing descriptor. "Base Set Series" → "Base Set", never down to "Base",
@@ -1006,7 +1010,11 @@ function lookupSetId(card){
   const ty = yearOf(card.set_name);
   const tseason = seasonOf(card.set_name);
   const catTokens = setTokens(card.category);
-  const langTokens = setTokens(card.language);
+  // Metabase writes the language into the set name ("2022 Pokemon **Japanese** Dark Phantasma")
+  // and often leaves the language field empty. Without reading it from the name, a Japanese set
+  // gets the foreign-edition penalty below and loses to its English twin.
+  const langTokens = setTokens(card.language)
+    .concat(target.filter(t => LANGUAGE_IN_NAME.indexOf(t) >= 0));
   const targetCore = target.filter(t => !catTokens.includes(t)).join(' ');
 
   // Lock onto the card's sport. Card Hedger often sends category: null, so fall back to the
@@ -1062,12 +1070,17 @@ function lookupSetId(card){
         if(!distinctive.length && matchToks.join(' ')!==targetCore) continue;
         const brandOk = !brandTokens.length || brandTokens.every(t => tSet.has(t));
         const langOk  = brandTokens.some(t => langTokens.some(l => l.startsWith(t) || t.startsWith(l)));
-        // For TCG the registry's brand column is the language. A card that names no language is
-        // English by default, so a foreign edition shouldn't win on a literal name match —
-        // "Base Set" (German) must not beat "Base Set Series" (English).
+        // For TCG the registry's brand column is the language. Penalise an edition that
+        // contradicts the card: if the card names a language, anything else is wrong; if it names
+        // none, it's English by default. Without this a Chinese row called "Sword & Shield" beats
+        // the Japanese "Sword & Shield Series" purely on being a more literal name match.
         const brandNorm = normSport(e.brand||'');
-        const foreignPenalty = (LANGUAGE_BRANDS.indexOf(brandNorm)>=0 && brandNorm!=='english'
-                                && !langTokens.length) ? -50 : 0;
+        const brandIsLang = LANGUAGE_BRANDS.indexOf(brandNorm)>=0;
+        let foreignPenalty = 0;
+        if(brandIsLang){
+          if(langTokens.length) foreignPenalty = langOk ? 0 : -50;
+          else if(brandNorm !== 'english') foreignPenalty = -50;
+        }
         const kindBonus = kind==='exact' ? 100 : kind==='relaxed' ? 60 : kind==='nobrand' ? 50 : 40;
         // An entry whose only match tokens are its own brand is a catch-all ("Donruss", "Panini").
         // It must never outrank a properly named set — "2024 Donruss Football" belongs to
@@ -1321,6 +1334,18 @@ async function settleIds(card){
   if(card.subset && !card.subset_id) jobs.push(lookupSubsetId(card).then(v=>{ if(v) card.subset_id=v; }));
   if(jobs.length) await Promise.all(jobs);
 
+  // Still missing IDs? The set name may contain the insert name rather than a set we know.
+  // Probe by name and take whatever that row can tell us.
+  if(!card.set_id || (!card.insert_id && !card.insert)){
+    const byName = await lookupByName(card);
+    if(byName){
+      if(!card.set_id && byName.set_id){ card.set_id = byName.set_id; card.set_id_source='name'; }
+      if(!card.insert && byName.insert){ card.insert = byName.insert; card.insert_from_name = true; }
+      if(!card.insert_id && byName.insert_id) card.insert_id = byName.insert_id;
+      if(!card.subset_id && byName.subset_id) card.subset_id = byName.subset_id;
+    }
+  }
+
   // Sport costs a query, and it's only needed to guard the *registry* Set ID lookup. If the Set ID
   // is already known there's nothing to guard, so skip it — that's the common case.
   if(!card.sport) card.sport = resolveSport(card.category, card.set_name);   // free, no network
@@ -1330,27 +1355,6 @@ async function settleIds(card){
   return card;
 }
 
-async function lookupSetIdInSystem(card){
-  if(!card || card.set_id || !card.set_name) return '';
-  const row = await mbLookup([['set_name', card.set_name]]);
-  return (row && row.set_id) || '';
-}
-
-async function lookupInsertId(card){
-  if(!card || !card.insert || card.insert_id) return '';
-  const params=[['insert_name', card.insert]];
-  if(card.set_name) params.push(['set_name', card.set_name]);
-  let row = await mbLookup(params);
-  if(!row && params.length>1) row = await mbLookup([['insert_name', card.insert]]);  // any set
-  return (row && row.insert_id) || '';
-}
-async function lookupSubsetId(card){
-  if(!card || !card.subset || card.subset_id) return '';
-  const params=[['set_name', card.set_name||''], ['subset_name', card.subset]].filter(p=>p[1]);
-  const row = await mbLookup(params);
-  return (row && row.subset_id) || '';
-}
-
 // Must match BUILD in api/card-match.js. When the API reports something older, the page says so
 // instead of quietly behaving like an old build.
 const APP_BUILD = '2026-08-10-status';
@@ -1358,16 +1362,6 @@ let apiBuild = null;
 function noteApiBuild(d){ if(d && d.build) apiBuild = d.build; }
 function apiStale(){ return apiBuild && apiBuild !== APP_BUILD; }
 
-async function mbLookup(params){ const rows = await mbFetch(params); return rows[0] || null; }
-
-// Resolution order when the cert itself isn't in our system:
-//   tier 2 — same card, same grading company AND same grade. That's the same slab class,
-//            so its image, grade, company and est. value all transfer safely.
-//   tier 3 — next copy in the database, whatever its grade. Fills blanks only; grade and
-//            grading company are never taken from it, because they belong to another slab.
-// Returns {tier, row}; tier 0 means nothing in our system matched.
-// Ask for every copy of the card, not one row. /api/card-match returns the chosen row plus its
-// siblings, which together are all copies of that SKU.
 // Answers "why isn't copy X here?" without leaving the panel: re-asks the same query with
 // debug on and reports whether an 8AC was absent from 30460's response or present and grouped out.
 let sibDiag = null;
@@ -1416,9 +1410,78 @@ function mbFetch(params){
   return pr;
 }
 async function mbLookupAll(params){ return mbFetch(params); }
+async function mbLookup(params){ const rows = await mbFetch(params); return rows[0] || null; }
 
-// Every copy of this card our system knows about. No status/component filtering is applied —
-// a sold, archived or in-process copy is just as valid a source for a value as a vaulted one.
+// Metabase sometimes folds the INSERT name into the set name: "2022 Pokemon Japanese Dark
+// Phantasma" is really the SWSH JPN *set* plus the Dark Phantasma *insert*. Strip the year,
+// category and language words and ask our own data whether the remainder is a known insert name —
+// 30460's insert_name filter is an ILIKE, so a name probe works.
+function insertNameCandidate(card){
+  if(!card || !card.set_name) return '';
+  const cat = setTokens(card.category);
+  const t = setTokens(card.set_name)
+    .filter(x => cat.indexOf(x) < 0)
+    .filter(x => LANGUAGE_IN_NAME.indexOf(x) < 0);
+  if(t.length < 2) return '';                 // one word is too generic to probe with
+  return t.join(' ');
+}
+// Returns a row whose insert name matches that remainder, carrying the IDs we're missing.
+async function lookupByName(card){
+  const cand = insertNameCandidate(card);
+  if(!cand) return null;
+  const rows = await mbLookupAll([['insert_name', cand]]);
+  if(!rows.length) return null;
+  return rows.find(r => r && (r.insert_id || r.set_id)) || null;
+}
+
+// Ask our own data for an ID, trying several angles and taking the first that answers. Scanning
+// every returned row (not just the first) matters — the chosen row often lacks the field while a
+// sibling has it. Attempts share the query cache, so the player+number probe is fetched once and
+// reused across all three lookups.
+async function firstFieldFromSystem(field, attempts){
+  for(const params of attempts){
+    if(!params || !params.length) continue;
+    const rows = await mbLookupAll(params);
+    const hit = rows.find(r => r && r[field]);
+    if(hit) return hit[field];
+  }
+  return '';
+}
+function byPlayerAndNumber(card){
+  return (card.player && card.card_no) ? [['player_name',card.player],['card_no',card.card_no]] : null;
+}
+
+// Our own data is authoritative for our own IDs. Deriving "BK FLRU" + a year from the registry
+// guesses at the season format; another card in the same set already carries the exact string.
+async function lookupSetIdInSystem(card){
+  if(!card || card.set_id) return '';
+  const a=[];
+  if(card.set_name) a.push([['set_name',card.set_name]]);
+  a.push(byPlayerAndNumber(card));                       // same card catalogued elsewhere
+  if(card.player && card.card_no && card.set_name)
+    a.push([['player_name',card.player],['card_no',card.card_no],['set_name',card.set_name]]);
+  return firstFieldFromSystem('set_id', a);
+}
+
+// The Set ID registry has no insert data, so insert IDs come from the card table: another card in
+// the same set carrying that insert, or failing that another copy of this exact card.
+async function lookupInsertId(card){
+  if(!card || !card.insert || card.insert_id) return '';
+  const a=[];
+  if(card.set_name) a.push([['insert_name',card.insert],['set_name',card.set_name]]);
+  a.push([['insert_name',card.insert]]);
+  a.push(byPlayerAndNumber(card));
+  return firstFieldFromSystem('insert_id', a);
+}
+async function lookupSubsetId(card){
+  if(!card || !card.subset || card.subset_id) return '';
+  const a=[];
+  if(card.set_name) a.push([['set_name',card.set_name],['subset_name',card.subset]]);
+  a.push([['subset_name',card.subset]]);
+  a.push(byPlayerAndNumber(card));
+  return firstFieldFromSystem('subset_id', a);
+}
+
 async function allCopiesFromSystem(card, extra){
   const get=k=> (card&&card[k]) || (extra&&extra[k]) || '';
   const player=get('player'), card_no=get('card_no');

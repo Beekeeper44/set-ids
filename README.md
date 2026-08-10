@@ -287,6 +287,19 @@ carry both forms. `gradeScale()` classifies a grade as ten-point or hundred-poin
 away. No conversion is assumed in either direction — if 30460 should be storing one canonical
 scale, that's a data fix, not a matcher fix.
 
+**Language editions.** Metabase writes the language into the set name ("2022 Pokemon **Japanese**
+Dark Phantasma") and often leaves the language field empty, so `lookupSetId()` reads language words
+out of the name as well. An edition whose brand contradicts the card's language is penalised: if a
+language is known, anything else is wrong; if none is given, English is assumed. Without that, the
+Chinese row literally named `Sword & Shield` beat the Japanese `Sword & Shield Series` on being a
+more exact string.
+
+**The Pokemon registry is series-level, not expansion-level.** It holds `Sword & Shield Series`,
+`Scarlet & Violet Series`, `Black & White Series` — 49 rows. Expansions like Dark Phantasma, Lost
+Abyss and Crown Zenith aren't in it, so a card named after its expansion can't map through the
+registry at all. Those resolve via `lookupSetIdInSystem()` instead — catalogue one card and every
+other copy follows.
+
 **Known limit:** BGS Black Label 10 and a regular BGS 10 are indistinguishable here — both parse
 as grade 10 and will match each other as exact siblings, despite very different values. If 30846
 carries a subgrade or label-type column, that's what would separate them.
@@ -426,7 +439,30 @@ The registry matcher gained two things:
 - a **sport-prefix guard** — a Set ID whose prefix doesn't match the card's sport is rejected. Without
   it, "2020 Donruss Optic Football" matched Soccer's `Donruss Optic` and returned `SCR DONOP 2020`.
 
+## Name probe — when the insert is hiding in the set name
+Metabase folds insert names into set names: `2022 Pokemon Japanese Dark Phantasma` is really the
+**SWSH JPN set** plus the **Dark Phantasma insert** (`s10a`). Neither the registry nor a set-name
+lookup can resolve that, because no set is called Dark Phantasma.
+
+`insertNameCandidate()` strips the year, category and language words off the set name and
+`lookupByName()` asks 30460 whether the remainder is a known insert name — its `insert_name`
+filter is an `ILIKE '%…%'`, so a name probe works. The matching row supplies `set_id`,
+`insert`, `insert_id` and `subset_id` in one go, and `set_id_source` is marked `name`.
+
+A one-word remainder is too generic to probe with and is skipped. The probe only runs when
+something is still missing after the normal lookups.
+
 ## Insert and Subset IDs
+`lookupSetIdInSystem()`, `lookupInsertId()` and `lookupSubsetId()` each try several angles and take
+the first that answers — set name, then insert/subset name, then **player + card number**. That
+last one matters when the same card is catalogued twice under slightly different set names: the
+copy with the IDs filled in is found by player and number even when the set name doesn't match.
+
+Each scans **every** returned row, not just the first — the chosen row often lacks the field while
+a sibling carries it. All attempts share the query cache, so the player+number probe is fetched
+once and reused across all three lookups.
+
+
 The Set ID registry has no insert data — `sport, brand, year, set_name, code, set_id` only. Insert
 IDs live in the card table, so `lookupInsertId()` maps insert → `insert_id` by finding any other
 card in the same set carrying that insert name (falling back to any set). `lookupSubsetId()` does
