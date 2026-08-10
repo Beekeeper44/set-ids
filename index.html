@@ -273,6 +273,7 @@
   .sibdays{display:inline-flex;gap:6px;margin-left:6px}
   .sibday{padding:4px 9px}
   .sibday.active{background:var(--green);color:#04210f;border-color:var(--green);font-weight:700}
+  .sibdayswhy{align-self:center;font-family:'JetBrains Mono',monospace;font-size:11px;color:#6d7d74;margin-left:2px}
   .sibnote{padding:7px 10px;font-size:11.5px;color:#6d7d74;font-family:'JetBrains Mono',monospace}
   .sibmore{padding:8px 10px;font-size:12.5px;color:#7d8c84;font-family:'JetBrains Mono',monospace}
   .sibchips{display:flex;flex-wrap:wrap;gap:7px;margin:2px 0 12px}
@@ -282,6 +283,10 @@
   .sibchip.on{border-color:rgba(0,255,140,.45);color:#dfe9e3;background:rgba(0,255,140,.06)}
   .sibchip input{accent-color:#3DEB3D;margin:0;cursor:pointer}
   .sibn{opacity:.55}
+  .apistale{margin-bottom:14px;padding:10px 12px;border:1px solid rgba(255,180,80,.45);
+    border-radius:10px;background:rgba(255,150,60,.08);color:#ffcf9b;
+    font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.6}
+  .apistale b{color:#ffe2c2}
   .sibcos{margin-bottom:8px}
   .sibco{border-color:rgba(255,255,255,.22);font-weight:700;letter-spacing:.05em}
   .sibco.part{border-color:rgba(0,255,140,.35);color:#cfe0d7;background:rgba(0,255,140,.03)}
@@ -1323,10 +1328,17 @@ async function lookupSubsetId(card){
   return (row && row.subset_id) || '';
 }
 
+// Must match BUILD in api/card-match.js. When the API reports something older, the page says so
+// instead of quietly behaving like an old build.
+const APP_BUILD = '2026-08-10-debug-rows';
+let apiBuild = null;
+function noteApiBuild(d){ if(d && d.build) apiBuild = d.build; }
+function apiStale(){ return apiBuild && apiBuild !== APP_BUILD; }
+
 async function mbLookup(params){
   try{
     const r=await fetch('/api/card-match?'+new URLSearchParams(params).toString(),{headers:chHeaders()});
-    if(r.ok){ const d=await r.json(); if(d && d.card) return d.card; }
+    if(r.ok){ const d=await r.json(); noteApiBuild(d); if(d && d.card) return d.card; }
   }catch(e){}
   return null;
 }
@@ -1342,7 +1354,7 @@ async function mbLookup(params){
 async function mbLookupAll(params){
   try{
     const r=await fetch('/api/card-match?'+new URLSearchParams(params).toString(),{headers:chHeaders()});
-    if(r.ok){ const d=await r.json(); if(d && d.card) return [d.card].concat(d.siblings||[]); }
+    if(r.ok){ const d=await r.json(); noteApiBuild(d); if(d && d.card) return [d.card].concat(d.siblings||[]); }
   }catch(e){}
   return [];
 }
@@ -1690,8 +1702,13 @@ function renderCard(c, source, demo){
     });
     const arrow = k => sibSort.key===k ? (sibSort.dir<0?' \u25be':' \u25b4') : '';
     const th = (k,lab) => '<span class="sibth'+(sibSort.key===k?' on':'')+'" onclick="setSibSort(&quot;'+k+'&quot;)">'+lab+arrow(k)+'</span>';
-    const dayBtn = n => '<button class="sibbtn sibday'+(sibDays===n?' active':'')+'" onclick="setSibDays('+n+')">'+n+'d</button>';
-    const dayBar = anyDated ? '<span class="sibdays">'+dayBtn(14)+dayBtn(30)+dayBtn(90)+'</span>' : '';
+    // Always rendered. With no valuation dates they're disabled and say why — hiding them made
+    // the feature look missing rather than inert.
+    const dayBtn = n => '<button class="sibbtn sibday'+(sibDays===n?' active':'')+(anyDated?'':' off')+'"'
+      + (anyDated ? ' onclick="setSibDays('+n+')"' : ' disabled title="no valuation dates on these copies"')
+      + '>'+n+'d</button>';
+    const dayBar = '<span class="sibdays">'+dayBtn(14)+dayBtn(30)+dayBtn(90)
+      + (anyDated ? '' : '<span class="sibdayswhy">no dates</span>')+'</span>';
     const rowsHtml = ordered.slice(0,25).map(s2=>{
       const val = isPriced(s2) ? money(s2.estimate.value) : '—';
       const d2 = estDay(s2);
@@ -1717,9 +1734,14 @@ function renderCard(c, source, demo){
             :(sibDays?('nothing valued in the last '+sibDays+' days'):'nothing matches that filter'))+'</div>')
       +(shown.length>25?'<div class="sibmore">+'+(shown.length-25)+' more</div>':'')+'</div>';
   }
+  const staleBanner = apiStale()
+    ? '<div class="apistale">API is running an older build ('+esc(apiBuild)+'). '
+      +'Redeploy <b>api/card-match.js</b> and <b>api/card-sales.js</b> \u2014 sibling matching, '
+      +'valuation dates and the cert guards live server-side and won\u2019t change on a refresh.</div>'
+    : '';
   $('matchCard').innerHTML=
     '<div class="cardimg">'+img+'</div>'+
-    '<div class="cardfields"><div class="cardtop">'+backBtn+'<span class="cardsrc '+(isCH?'cardhedge':'metabase')+'">'+(isCH?'Card Hedger · fallback':'Metabase')+'</span>'+demoBadge+adminLink+'</div>'+est+rows+sibHtml+'</div>';
+    '<div class="cardfields">'+staleBanner+'<div class="cardtop">'+backBtn+'<span class="cardsrc '+(isCH?'cardhedge':'metabase')+'">'+(isCH?'Card Hedger · fallback':'Metabase')+'</span>'+demoBadge+adminLink+'</div>'+est+rows+sibHtml+'</div>';
   renderSales(c.sales, c.sales_note);
 }
 
@@ -1730,7 +1752,7 @@ async function doLookup(matchUrl, q){
   let card=null, source='metabase', siblings=[];
   try{
     const r=await fetch(matchUrl,{headers:chHeaders()});
-    if(r.ok){ const d=await r.json(); if(d && d.card){ card=d.card; source=d.source||'metabase'; siblings=(d.siblings||[]); } }
+    if(r.ok){ const d=await r.json(); noteApiBuild(d); if(d && d.card){ card=d.card; source=d.source||'metabase'; siblings=(d.siblings||[]); } }
   }catch(e){}
   if(!card){
     const demo=(typeof DEMO_CARDS!=='undefined') && (DEMO_CARDS[q] || DEMO_CARDS[String(q).replace(/\D/g,'')]);

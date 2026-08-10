@@ -5,6 +5,11 @@
 // Env: METABASE_API_KEY (required), METABASE_URL (optional), CARD_MATCH_CARD_ID (optional, 30460)
 
 const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// Bumped whenever this file changes. Returned on every response so the page can tell you when the
+// API is older than itself — several fixes here are server-side only, and a static refresh leaves
+// them behind silently.
+const BUILD = '2026-08-10-debug-rows';
 const pick = (o, ...targets) => {
   if (!o) return '';
   const keys = Object.keys(o);
@@ -220,12 +225,29 @@ export default async function handler(req, res) {
           return s;
         });
 
-      const out = { source: 'metabase', card, siblings };
-      if (q.debug) out.debug = { row_count: rows.length, matched_count: matched.length, discarded: rows.length - matched.length, sibling_count: siblings.length, chosen_nonempty: nonEmpty(row), raw_keys: Object.keys(row || {}), raw_row: row };
+      const out = { build: BUILD, source: 'metabase', card, siblings };
+      if (q.debug) {
+        // Every 8AC the question returned, so you can see at a glance whether a copy you expect
+        // is absent from the response (a 30460 problem) or present but grouped out (ours).
+        const acs = rows.map(r => String(pick(r, 'acnumber', 'ac', '8ac') || '')).filter(Boolean);
+        const sibAcs = siblings.map(x => String(x.ac_number || '')).filter(Boolean);
+        out.debug = {
+          row_count: rows.length,
+          matched_count: matched.length,
+          discarded: rows.length - matched.length,
+          sibling_count: siblings.length,
+          returned_ac_numbers: acs.slice(0, 400),
+          sibling_ac_numbers: sibAcs.slice(0, 400),
+          grouped_out: acs.filter(a => a !== String(card.ac_number) && sibAcs.indexOf(a) < 0).slice(0, 100),
+          chosen_nonempty: nonEmpty(row),
+          raw_keys: Object.keys(row || {}),
+          raw_row: row
+        };
+      }
       res.status(200).json(out);
       return;
     }
-    if (q.debug) { res.status(200).json({ source: 'none', debug: { row_count: rows.length, matched_count: 0, discarded: rows.length, filters, sample_row: rows[0] || null } }); return; }
+    if (q.debug) { res.status(200).json({ build: BUILD, source: 'none', debug: { row_count: rows.length, matched_count: 0, discarded: rows.length, filters, sample_row: rows[0] || null } }); return; }
   } catch (e) {
     if (q.debug) { res.status(200).json({ source: 'error', debug: { error: String(e).slice(0, 300) } }); return; }
   }

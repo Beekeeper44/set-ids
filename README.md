@@ -207,6 +207,18 @@ whole registry resolves ~99% of sets exactly; the rest are entries the registry 
 different codes with the same words (e.g. `Topps Holiday Bowman` vs `Bowman Topps Holiday`,
 `Skybox E X-2000` vs `SkyBox E-X2000`), which can't be told apart from a set name alone.
 
+## Build stamp — check this before debugging anything
+`api/card-match.js` carries a `BUILD` constant and returns it on every response. `index.html`
+carries the matching `APP_BUILD`. When they diverge the panel shows an orange banner naming the
+API's build and telling you to redeploy.
+
+This exists because most of the fixes in this project are **server-side** — sibling matching,
+`estimated_value_on`, the filter verification, the cert-collision guards — and a static refresh of
+`index.html` leaves them behind with no visible symptom. Several rounds of debugging went into
+"why isn't this working" when the answer was that `api/` hadn't been deployed.
+
+**Bump `BUILD` and `APP_BUILD` together whenever `api/card-match.js` changes.**
+
 ## The saved question returns unfiltered rows (important)
 Question 30460 does **not** reliably apply its cert filter. A lookup for a single cert comes back
 with ~40 rows: the real match plus a long tail of rows with a null `cert_number`, mostly empty but
@@ -225,7 +237,11 @@ vanish if the column is numeric), grades compare numerically (9 = 9.0), and text
 case- and punctuation-insensitively (`arena_club` = `Arena Club`). If a filter's column isn't
 present in the row at all, that filter is skipped rather than treated as a mismatch.
 
-`?debug=1` reports `row_count`, `matched_count` and `discarded`. A large `discarded` on every
+`?debug=1` reports `row_count`, `matched_count`, `discarded`, `sibling_count`, plus
+`returned_ac_numbers` (every 8AC the question sent), `sibling_ac_numbers` (what we grouped in) and
+`grouped_out` (returned but not grouped). Those three answer the recurring question of whether a
+missing copy is **absent from the response** — a 30460 problem — or **present and grouped out** —
+ours. A large `discarded` on every
 lookup confirms the filter isn't being applied server-side — worth fixing in the question, since
 every consumer of 30460 has the same problem and only this proxy is now defending against it.
 
@@ -413,7 +429,9 @@ rows last. Every header is clickable — 8AC, Grade, Cert, date, value — and c
 flips direction; an arrow marks it. Undated rows stay pinned to the bottom in either direction,
 since "no date" isn't older or newer than anything.
 
-**14d / 30d / 90d** buttons window the table by valuation date. The window is applied **before**
+**14d / 30d / 90d** buttons window the table by valuation date. They're **always rendered**; when
+no copy has a date they're disabled and labelled "no dates" rather than hidden, so the feature
+doesn't look absent when it's merely inert. The window is applied **before**
 the chips are built, so every count describes what's actually in range and a company chip covers
 the grades it has *in that range* — chips for grades with nothing in the window disappear entirely
 rather than advertising a count you can't see. The header reads e.g. "8 of 30 · last 30d". Clicking the active one clears it.
