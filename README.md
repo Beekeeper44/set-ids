@@ -92,8 +92,14 @@ Field mapping lives in `normalizeCard()` in `api/card-match.js`; add key aliases
 field ever shows blank.
 
 ## Sibling copies come free with the lookup
-A cert lookup against 30460 returns the matched row **plus every other copy of the same card** —
-rows sharing a `subset_id` (which identifies the card; `card_id` identifies the physical copy).
+A cert lookup against 30460 returns the matched row **plus every other copy of the same card**.
+`sameSku()` treats a **matching** `subset_id` as proof, but a **mismatch is not a veto** — copies of
+one card do carry different `subset_id`s in 30460, so it falls through to comparing player, card
+number, set name, insert and parallel. Treating a mismatch as authoritative hid an Arena Club 9.5
+twin (8AC 3902111, $25) from its own copy, which then took a $15 suggestion off a CSG 9.5 instead.
+
+That divergence is worth fixing upstream: two identical Wigglytuff Arena Club 9.5s should not sit
+under different `subset_id`s, and anything else joining on that column has the same blind spot.
 Each carries its own cert, grade, grading company, image and estimated value.
 
 `/api/card-match` returns those as `siblings`, so the panel fills a missing est. value or image

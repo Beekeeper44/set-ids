@@ -107,17 +107,23 @@ function rowMatchesFilters(row, filters) {
 // Rows sharing a subset_id are copies of the same card — each with its own cert, grade and
 // est. value. card_id identifies the physical copy; subset_id identifies the card itself.
 // So the response to a cert lookup already carries every sibling copy; no extra query needed.
+// Rows sharing a subset_id are copies of the same card. A *matching* subset_id is proof; a
+// mismatch is not a veto — copies of one card can carry different subset_ids in 30460, and
+// treating that as authoritative hid an Arena Club 9.5 twin holding the only relevant value.
+// So: equal subset_id confirms, otherwise fall through to comparing the identity fields.
 function sameSku(a, b) {
   const sa = norm(pick(a, 'subsetid')), sb = norm(pick(b, 'subsetid'));
-  if (sa && sb) return sa === sb;
+  if (sa && sb && sa === sb) return true;
   const key = r => [
     norm(pick(r, 'playername', 'player')),
     norm(pick(r, 'cardno', 'cardnumber', 'number')),
     norm(pick(r, 'setname', 'set')),
+    norm(pick(r, 'insert', 'insertname')),
     norm(pick(r, 'parallelname', 'parallel'))
   ].join('|');
   const ka = key(a);
-  return ka === key(b) && ka.replace(/\|/g, '') !== '';   // never treat two blank rows as siblings
+  // Require real identity, not two mostly-blank rows agreeing on nothing.
+  return ka === key(b) && ka.replace(/\|/g, '').length > 2;
 }
 
 let metaCache = null;
