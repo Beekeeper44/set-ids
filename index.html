@@ -259,14 +259,20 @@
   .sibwrap{margin-top:20px;padding-top:14px;border-top:1px solid rgba(255,255,255,.08)}
   .sibhead{font-family:'JetBrains Mono',monospace;font-size:12.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--green);margin-bottom:8px}
   .sibcount{opacity:.55;margin-left:6px}
-  .sibrow{display:grid;grid-template-columns:1.2fr .9fr 1.1fr .9fr;gap:12px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.05);font-size:13.5px;border-radius:6px}
+  .sibrow{display:grid;grid-template-columns:1fr .8fr 1fr 1fr .8fr;gap:12px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.05);font-size:13.5px;border-radius:6px}
   .sibrow span{font-family:'JetBrains Mono',monospace;color:#dfe9e3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .sibhdr{border-bottom:1px solid rgba(255,255,255,.12)}
   .sibhdr span{font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:#7d8c84}
   .sibrow.used{background:rgba(0,255,140,.07)}
   .sibrow.used .sibac{color:var(--green)}
   .sibval{text-align:right}
-  .sibwhen{display:block;font-style:normal;font-size:11px;color:#6d7d74;margin-top:2px}
+  .sibdate{color:#93a49b}
+  .sibth{cursor:pointer;user-select:none}
+  .sibth:hover{color:#cfe0d7}
+  .sibth.on{color:var(--green)}
+  .sibdays{display:inline-flex;gap:6px;margin-left:6px}
+  .sibday{padding:4px 9px}
+  .sibday.active{background:var(--green);color:#04210f;border-color:var(--green);font-weight:700}
   .sibnote{padding:7px 10px;font-size:11.5px;color:#6d7d74;font-family:'JetBrains Mono',monospace}
   .sibmore{padding:8px 10px;font-size:12.5px;color:#7d8c84;font-family:'JetBrains Mono',monospace}
   .sibchips{display:flex;flex-wrap:wrap;gap:7px;margin:2px 0 12px}
@@ -276,6 +282,10 @@
   .sibchip.on{border-color:rgba(0,255,140,.45);color:#dfe9e3;background:rgba(0,255,140,.06)}
   .sibchip input{accent-color:#3DEB3D;margin:0;cursor:pointer}
   .sibn{opacity:.55}
+  .sibcos{margin-bottom:8px}
+  .sibco{border-color:rgba(255,255,255,.22);font-weight:700;letter-spacing:.05em}
+  .sibco.part{border-color:rgba(0,255,140,.35);color:#cfe0d7;background:rgba(0,255,140,.03)}
+  .sibco.part input{opacity:.45}
   .sibclear{margin-left:10px;font-size:12px;color:var(--green);cursor:pointer;text-transform:none;letter-spacing:0}
   .sibclear:hover{text-decoration:underline}
   .sibacts{margin-left:auto;display:inline-flex;gap:8px}
@@ -1188,6 +1198,27 @@ const sibComboKey = s => canonCompany(s.grading_company||'') + '|' +
     ? parseFloat(String(s.grade).replace(/[^0-9.]/g,'')) : '');
 const sibComboLabel = s => (s.grade_display && String(s.grade_display).trim())
   || ((s.grading_company||'?')+' '+(s.grade||'?'));
+// Company alone, for the top filter row. Known graders use their canonical name so a chip
+// covering both "BECKETT 9.5" and "BGS 9.5" rows reads BGS, not whichever spelling came first.
+const sibCompanyKey = s => canonCompany(s.grading_company||'') || '?';
+const CANON_GRADERS = ['PSA','BGS','SGC','CGC','CSG','HGA'];
+const sibCompanyLabel = s => {
+  const c = canonCompany(s.grading_company||'');
+  if(CANON_GRADERS.indexOf(c)>=0) return c;
+  return (String(s.grade_display||'').replace(/\s*[\d.]+\s*$/,'').trim())
+      || String(s.grading_company||'?');
+};
+// Tick or clear every grade belonging to one company in a single click.
+function toggleSibCompany(coKey){
+  const mine = lastSibCombos.filter(x=>x.co===coKey).map(x=>x.key);
+  if(!mine.length) return;
+  if(sibFilter===null) sibFilter = new Set(lastSibKeys);
+  const allOn = mine.every(k=>sibFilter.has(k));
+  mine.forEach(k=> allOn ? sibFilter.delete(k) : sibFilter.add(k));
+  if(sibFilter.size===lastSibKeys.length) sibFilter=null;
+  if(lastCard) renderCard(lastCard, lastSource);
+}
+let lastSibCombos = [];
 // null = everything (the default). A Set = exactly those keys, and an empty Set genuinely means
 // none — so "deselect all" clears the table instead of silently reverting to everything.
 function toggleSibFilter(key, on){
@@ -1200,6 +1231,21 @@ function selectAllSibs(){ sibFilter=null; if(lastCard) renderCard(lastCard, last
 function clearAllSibs(){ sibFilter=new Set(); if(lastCard) renderCard(lastCard, lastSource); }
 function resetSibFilter(){ selectAllSibs(); }
 let lastSibKeys = [], lastCard = null, lastSource = '', lastCardKey = '';
+// Table sort + date-range window. Default: most recently valued first.
+let sibSort = {key:'date', dir:-1};
+let sibDays = 0;                       // 0 = no date window
+function setSibSort(key){
+  if(sibSort.key===key) sibSort.dir = -sibSort.dir;
+  else sibSort = {key:key, dir: (key==='ac'||key==='cert') ? 1 : -1};
+  if(lastCard) renderCard(lastCard, lastSource);
+}
+function setSibDays(n){ sibDays = (sibDays===n ? 0 : n); if(lastCard) renderCard(lastCard, lastSource); }
+const sibSortVal = (r,key) => {
+  if(key==='date')  return estTime(r);
+  if(key==='value') return Number(r.estimate && r.estimate.value) || 0;
+  if(key==='grade') return parseFloat(String(r.grade==null?'':r.grade).replace(/[^0-9.]/g,'')) || 0;
+  return Number(idKeyJS(key==='cert' ? r.cert : r.ac_number)) || 0;
+};
 
 // Choose among sibling copies the cert lookup already returned. Same company + same grade is
 // tier 2. Otherwise tier 3 takes the copy whose grade is *closest* to ours rather than the
@@ -1506,7 +1552,7 @@ function renderCard(c, source, demo){
   // A new card starts with every chip on. Carrying a previous card's selection over meant a
   // lookup could land showing one row, or none, for no visible reason.
   const cardKey = idKeyJS(c && c.ac_number) + '|' + idKeyJS(c && c.cert);
-  if(cardKey !== lastCardKey){ sibFilter = null; lastCardKey = cardKey; }
+  if(cardKey !== lastCardKey){ sibFilter = null; sibSort = {key:'date', dir:-1}; sibDays = 0; lastCardKey = cardKey; }
   lastCard=c; lastSource=source;
   $('matchEmpty').hidden=true; $('matchResult').hidden=false;
   const b=$('matchBatch'); if(b) b.hidden=true;
@@ -1570,28 +1616,56 @@ function renderCard(c, source, demo){
   // 30460 can return the same item twice (component + main), so the card being viewed can slip
   // into its own sibling list. Match on 8AC or cert and drop it.
   const selfAc=idKeyJS(c.ac_number), selfCert=idKeyJS(c.cert);
+  // Unvalued copies are hidden — they tell you nothing as comps — EXCEPT ones graded by the same
+  // company as this card. For an Arena Club 9.5 the other Arena Club copies are the most relevant
+  // comparison there is, and they're also the least likely to carry a value, so filtering purely
+  // on value made them vanish precisely when they mattered.
+  const ownCo = canonCompany(c.grading_company||'');
   const sibs=(c.siblings||[]).filter(s=>{
     if(!s || !(s.ac_number||s.cert)) return false;
     if(selfAc && idKeyJS(s.ac_number)===selfAc) return false;
     if(selfCert && idKeyJS(s.cert)===selfCert) return false;
-    return isPriced(s);          // a copy with no value tells you nothing here
+    if(isPriced(s)) return true;
+    return !!ownCo && canonCompany(s.grading_company)===ownCo;
   });
   if(sibs.length){
     const used = c.estimate_ac||'';
     // One checkbox per grading company + grade present. All on by default; ticking a subset
     // narrows the table without touching the suggested value above.
+    // The date window applies before the chips are built, so a chip's count describes what's
+    // actually in range — and clicking a company covers every grade it has *in that range*.
+    const anyDated = sibs.some(r=>estTime(r)>-Infinity);
+    const cutoff = sibDays ? (Date.now() - sibDays*86400000) : 0;
+    const inRange = sibDays ? sibs.filter(r=>estTime(r)>=cutoff) : sibs;
     const combos = [];
-    sibs.forEach(s2=>{
+    inRange.forEach(s2=>{
       const k = sibComboKey(s2);
       let hit = combos.find(x=>x.key===k);
-      if(!hit){ hit={key:k, label:sibComboLabel(s2), n:0, valued:0}; combos.push(hit); }
+      if(!hit){ hit={key:k, label:sibComboLabel(s2), co:sibCompanyKey(s2), coLabel:sibCompanyLabel(s2), n:0, valued:0}; combos.push(hit); }
       hit.n++;
       if(s2.estimate && Number(s2.estimate.value)>0) hit.valued++;
     });
     combos.sort((a,b)=> b.n-a.n || a.label.localeCompare(b.label));
     lastSibKeys = combos.map(x=>x.key);
+    lastSibCombos = combos;
     const active = k => sibFilter===null || sibFilter.has(k);
-    const shown = sibs.filter(s2=>active(sibComboKey(s2)));
+    const shown = inRange.filter(s2=>active(sibComboKey(s2)));
+
+    // Grading company row — one click covers every grade under that company.
+    const cos = [];
+    combos.forEach(x=>{
+      let g = cos.find(y=>y.co===x.co);
+      if(!g){ g={co:x.co, label:x.coLabel, n:0, keys:[]}; cos.push(g); }
+      g.n += x.n; g.keys.push(x.key);
+    });
+    cos.sort((a,b)=> b.n-a.n || a.label.localeCompare(b.label));
+    const coChips = cos.map(g=>{
+      const onCount = g.keys.filter(k=>active(k)).length;
+      const all = onCount===g.keys.length, some = onCount>0 && !all;
+      return '<label class="sibchip sibco'+(all?' on':'')+(some?' part':'')+'">'
+        +'<input type="checkbox" '+(all?'checked':'')+' onchange="toggleSibCompany(&quot;'+g.co+'&quot;)">'
+        +esc(g.label)+'<span class="sibn">'+g.n+'</span></label>';
+    }).join('');
 
     const chips = combos.map(x=>
       '<label class="sibchip'+(active(x.key)?' on':'')+'">'
@@ -1605,31 +1679,42 @@ function renderCard(c, source, demo){
       + '</span>';
 
     const ordered = shown.slice().sort((x,y)=>{
-      const d = estTime(y)-estTime(x);                       // most recent first
-      if(d) return d;
-      return (Number(y.estimate&&y.estimate.value)||0)-(Number(x.estimate&&x.estimate.value)||0);
+      const a=sibSortVal(x,sibSort.key), b=sibSortVal(y,sibSort.key);
+      if(a===b || (!isFinite(a)&&!isFinite(b))){                 // tie → newest, then dearest
+        const d=estTime(y)-estTime(x); if(d) return d;
+        return (Number(y.estimate&&y.estimate.value)||0)-(Number(x.estimate&&x.estimate.value)||0);
+      }
+      if(!isFinite(a)) return 1;                                 // undated/blank always last
+      if(!isFinite(b)) return -1;
+      return (a<b?-1:1)*sibSort.dir;
     });
-    const anyDated = ordered.some(r=>estTime(r)>-Infinity);
+    const arrow = k => sibSort.key===k ? (sibSort.dir<0?' \u25be':' \u25b4') : '';
+    const th = (k,lab) => '<span class="sibth'+(sibSort.key===k?' on':'')+'" onclick="setSibSort(&quot;'+k+'&quot;)">'+lab+arrow(k)+'</span>';
+    const dayBtn = n => '<button class="sibbtn sibday'+(sibDays===n?' active':'')+'" onclick="setSibDays('+n+')">'+n+'d</button>';
+    const dayBar = anyDated ? '<span class="sibdays">'+dayBtn(14)+dayBtn(30)+dayBtn(90)+'</span>' : '';
     const rowsHtml = ordered.slice(0,25).map(s2=>{
-      const val = (s2.estimate && Number(s2.estimate.value)>0) ? money(s2.estimate.value) : '—';
+      const val = isPriced(s2) ? money(s2.estimate.value) : '—';
       const d2 = estDay(s2);
       const isUsed = used && String(s2.ac_number)===String(used);
       return '<div class="sibrow'+(isUsed?' used':'')+'">'
         +'<span class="sibac">'+esc(s2.ac_number||'—')+'</span>'
         +'<span class="sibgrade">'+esc(sibComboLabel(s2))+'</span>'
         +'<span class="sibcert">'+esc(s2.cert||'—')+'</span>'
-        +'<span class="sibval">'+esc(val)
-          +(d2!=='—' ? '<em class="sibwhen">'+esc(d2)+'</em>' : '')+'</span></div>';
+        +'<span class="sibdate">'+esc(d2)+'</span>'
+        +'<span class="sibval">'+esc(val)+'</span></div>';
     }).join('');
 
     sibHtml='<div class="sibwrap"><div class="sibhead">Other copies in the vault '
-      +'<span class="sibcount">'+shown.length+(shown.length!==sibs.length?(' of '+sibs.length):'')+'</span>'+clear+'</div>'
-      +'<div class="sibchips">'+chips+'</div>'
-      +'<div class="sibrow sibhdr"><span>8AC</span><span>Grade</span><span>Cert</span>'
-      +'<span>Est. value</span></div>'
+      +'<span class="sibcount">'+shown.length+(shown.length!==sibs.length?(' of '+sibs.length):'')
+      +(sibDays?(' · last '+sibDays+'d'):'')+'</span>'+clear+'</div>'
+      +(cos.length>1 ? '<div class="sibchips sibcos">'+coChips+'</div>' : '')
+      +'<div class="sibchips">'+chips+dayBar+'</div>'
+      +'<div class="sibrow sibhdr">'+th('ac','8AC')+th('grade','Grade')+th('cert','Cert')
+      +th('date','Last est value date')+th('value','Est. value')+'</div>'
       +(anyDated?'':'<div class="sibnote">no valuation dates in 30460 &mdash; ordered by value</div>')
       +(shown.length ? rowsHtml
-        : '<div class="sibmore">'+(noneOn?'nothing selected':'nothing matches that filter')+'</div>')
+        : '<div class="sibmore">'+(noneOn?'nothing selected'
+            :(sibDays?('nothing valued in the last '+sibDays+' days'):'nothing matches that filter'))+'</div>')
       +(shown.length>25?'<div class="sibmore">+'+(shown.length-25)+' more</div>':'')+'</div>';
   }
   $('matchCard').innerHTML=

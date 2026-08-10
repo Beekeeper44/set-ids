@@ -113,10 +113,18 @@ and grade. That ordering matters: an Arena Club card never reaches Card Hedger (
 cert), so if enrichment sat inside that block it would render with only its own row — which is
 why one 8AC showed a full card and its identical twin showed almost nothing.
 
-The panel lists **Other copies in the vault** beneath the fields — only copies that actually carry
-an est. value, since an unvalued copy tells you nothing here. Chip counts reflect valued copies
-only, so they'll read lower than the raw copy count. There's a checkbox per grading
-company + grade (`PSA 10`, `Arena Club 9.5`, `BGS 9.5`…). All are on by default, with **select all** / **deselect all**; deselecting
+The panel lists **Other copies in the vault** beneath the fields — copies that carry an est. value, **plus every copy graded by the
+same company as the card being viewed** even when unvalued. For an Arena Club 9.5 the other Arena
+Club copies are the most relevant comparison there is, and they're also the least likely to have
+been valued — filtering purely on value made them vanish exactly when they mattered. Other
+companies still need a value to appear. Chip counts reflect valued copies
+only, so they'll read lower than the raw copy count. There are two filter rows: **grading company** (PSA, BGS, SGC, CGC, CSG, Arena Club) and, beneath
+it, **company + grade**. Clicking a company chip ticks or clears every grade under it in one go,
+and it renders half-lit when only some of its grades are selected. Company chips use the canonical
+grader name, so one **BGS** chip covers rows spelled `beckett`, `BGS` and `bvg` rather than
+labelling itself after whichever spelling happened to come first.
+
+Below that is a checkbox per grading company + grade (`PSA 10`, `Arena Club 9.5`, `BGS 9.5`…). All are on by default, with **select all** / **deselect all**; deselecting
 everything genuinely empties the table rather than reverting to all. Chips are keyed through `canonCompany()` and a numeric grade, so `Beckett 9.5`
 and `BGS 9.5` collapse into one. Filtering affects the table only — the suggested value above is
 unchanged.
@@ -394,9 +402,17 @@ The chip filter resets on every new card (`lastCardKey`). Carrying a previous se
 a lookup could land showing one row, or none, for no visible reason.
 
 ## Valuation dates
-The copies table orders newest-first, undated rows last. There is **one value column**: the date
-sits under the amount rather than in a column of its own — two adjacent headings ("Valued" and
-"Est. value") read as two different numbers. It reads
+The copies table has a **Last est value date** column, sorted newest-first by default with undated
+rows last. Every header is clickable — 8AC, Grade, Cert, date, value — and clicking the active one
+flips direction; an arrow marks it. Undated rows stay pinned to the bottom in either direction,
+since "no date" isn't older or newer than anything.
+
+**14d / 30d / 90d** buttons window the table by valuation date. The window is applied **before**
+the chips are built, so every count describes what's actually in range and a company chip covers
+the grades it has *in that range* — chips for grades with nothing in the window disappear entirely
+rather than advertising a count you can't see. The header reads e.g. "8 of 30 · last 30d". Clicking the active one clears it.
+Undated rows drop out while a window is on — they can't satisfy "valued in the last 14 days" — and
+the buttons only appear when at least one row has a date. It reads
 `estimate_date`, normalised in `card-match.js` from explicit est-value timestamps only —
 `estimated_value_updated_at`, `valued_at`, `recomped_at` and similar.
 
