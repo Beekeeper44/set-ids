@@ -288,6 +288,7 @@
     border-radius:10px;background:rgba(255,150,60,.08);color:#ffcf9b;
     font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.6}
   .apistale b{color:#ffe2c2}
+  .buildstamp{font-family:'JetBrains Mono',monospace;font-size:11px;opacity:.5}
   .sibdiag{margin-left:12px;font-size:11.5px;color:#7d8c84;cursor:pointer;text-transform:none;letter-spacing:0;text-decoration:underline dotted}
   .sibdiag:hover{color:var(--green)}
   .diagbox{position:relative;margin:10px 0 12px;padding:11px 13px;border:1px solid rgba(255,255,255,.14);
@@ -339,7 +340,7 @@
 <header>
   <div class="brand">
     <button class="logo" title="Home — all sports" onclick="goHome()"><img src="data:image/png;base64,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" alt="Arena Club"></button>
-    <button class="home-title" title="Home — all sports" onclick="goHome()"><h1>Set <span>IDs</span></h1><p>Arena Club · signed in as alan · admin</p></button>
+    <button class="home-title" title="Home — all sports" onclick="goHome()"><h1>Set <span>IDs</span></h1><p>Arena Club · signed in as alan · admin · <span id="buildStamp" class="buildstamp"></span></p></button>
   </div>
   <div class="whoami">
     <span>signed in as <b>alan</b></span>
@@ -1367,9 +1368,18 @@ async function settleIds(card, pool){
 
 // Must match BUILD in api/card-match.js. When the API reports something older, the page says so
 // instead of quietly behaving like an old build.
-const APP_BUILD = '2026-08-10-status';
+const APP_BUILD = '2026-08-10-surging';
 let apiBuild = null;
-function noteApiBuild(d){ if(d && d.build) apiBuild = d.build; }
+function noteApiBuild(d){
+  if(d && d.build){ apiBuild = d.build; paintBuildStamp(); }
+}
+function paintBuildStamp(){
+  const el = $('buildStamp'); if(!el) return;
+  el.textContent = apiBuild
+    ? (apiBuild === APP_BUILD ? ('build ' + APP_BUILD) : ('page ' + APP_BUILD + ' / api ' + apiBuild))
+    : ('build ' + APP_BUILD);
+  el.style.color = (apiBuild && apiBuild !== APP_BUILD) ? '#ffb45c' : '';
+}
 function apiStale(){ return apiBuild && apiBuild !== APP_BUILD; }
 
 // Answers "why isn't copy X here?" without leaving the panel: re-asks the same query with
@@ -1566,7 +1576,9 @@ const pad2 = n => (n<10?'0':'')+n;
 const estTime = r => { const d=parseEstDate(r&&r.estimate_date); return d?d.getTime():-Infinity; };
 const estDay  = r => { const d=parseEstDate(r&&r.estimate_date);
   return d ? (d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())) : '\u2014'; };
-async function findValuedCopy(card, extra, pool){
+// poolIsComplete: the cert/8AC lookup already returned the whole identity group, so widening
+// would re-run the same 13s query for the same rows. Only widen when we don't have that set.
+async function findValuedCopy(card, extra, pool, poolIsComplete){
   const ownGrade = hasRealGrade(card);
   const company = (ownGrade && card && card.grading_company) ? card.grading_company
                 : (extra && extra.grading_company) || (card && card.grading_company) || '';
@@ -1576,6 +1588,10 @@ async function findValuedCopy(card, extra, pool){
   const inHand = (pool||[]).filter(isPriced);
   const exactInHand = pickSibling(inHand, company, grade);
   if(exactInHand.row && exactInHand.tier===2) return exactInHand;
+  if(poolIsComplete){
+    const near = pickSibling(inHand, company, grade);
+    return near.row ? near : {tier:0, row:null};
+  }
 
   // Nothing exact in hand — ask the system before accepting a nearest-grade stand-in.
   const wider = (await allCopiesFromSystem(card, extra)).filter(isPriced);
@@ -1934,10 +1950,10 @@ function renderCard(c, source, demo){
             :(sibDays?('nothing valued in the last '+sibDays+' days'):'nothing matches that filter'))+'</div>')
       +(shown.length>25?'<div class="sibmore">+'+(shown.length-25)+' more</div>':'')+'</div>';
   }
+  // Don't assume which side is behind — name both and let the builds speak.
   const staleBanner = apiStale()
-    ? '<div class="apistale">API is running an older build ('+esc(apiBuild)+'). '
-      +'Redeploy <b>api/card-match.js</b> and <b>api/card-sales.js</b> \u2014 sibling matching, '
-      +'valuation dates and the cert guards live server-side and won\u2019t change on a refresh.</div>'
+    ? '<div class="apistale">Build mismatch \u2014 page <b>'+esc(APP_BUILD)+'</b>, API <b>'+esc(apiBuild)+'</b>. '
+      +'Deploy <b>index.html</b> and <b>api/</b> together; whichever is older is running old logic.</div>'
     : '';
   $('matchCard').innerHTML=
     '<div class="cardimg">'+img+'</div>'+
@@ -1984,7 +2000,7 @@ async function doLookup(matchUrl, q){
       const own = pickSibling(siblings, card.grading_company, card.grade);
       if(own.row) adoptSibling(card, own.row, own.tier, card.cert, true);
       if(!card.estimate){
-        const v = await findValuedCopy(card, null, siblings);
+        const v = await findValuedCopy(card, null, siblings, siblings.length>0);
         if(v.row) applyEstimate(card, v.row, v.tier);
       }
     }
@@ -2059,7 +2075,7 @@ async function doLookup(matchUrl, q){
         // The copy that best describes the card may itself be unvalued. Any copy in the system
         // with a value will do — whatever its status.
         if(!card.estimate){
-          const v = await findValuedCopy(card, s.card, siblings);
+          const v = await findValuedCopy(card, s.card, siblings, siblings.length>0);
           if(v.row) applyEstimate(card, v.row, v.tier);
         }
         hadImg = noteImage(card, hadImg, 'sibling');
@@ -2274,6 +2290,7 @@ document.addEventListener('keydown',e=>{
 buildYearList();
 wireOcr();
 renderAll();
+try{ paintBuildStamp(); }catch(e){}
 switchView('match');
 loadFromMetabase(false);
 </script>

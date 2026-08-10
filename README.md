@@ -112,6 +112,10 @@ Measured at 30460's real 12.8s per call: with siblings in hand it's **0 extra qu
 Only a card with nothing to read from falls through to the network, and then every angle goes out
 in a single wave.
 
+`findValuedCopy()` no longer widens when the pool is already the complete identity group — under
+30460's seed design, a cert/8AC lookup returns exactly that group, so widening re-ran the same
+~13s query for rows already in hand. A lookup is now **one** Metabase call in the normal case.
+
 30460 itself is now the whole cost. Worth noting the seed lookup uses
 `TRIM(c.number::text) ILIKE '%' || {{ac_number}} || '%'` — a leading-wildcard match can't use an
 index, so it scans. An exact `=` on `ac_number` (and `cert_number`) would likely take a large bite
