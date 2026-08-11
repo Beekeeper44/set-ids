@@ -102,6 +102,15 @@ missing, which is why 8AC 3902111 (the only Arena Club 9.5 carrying a value) was
 every other copy of that card — the seed-card exemption meant it appeared when searched directly
 and vanished otherwise.
 
+## Batch: certs or 8ACs
+The multi-lookup panel has a **Look up as** selector — Cert number or 8AC number. They can't be
+told apart by shape (both 7–9 digits), so it's an explicit choice rather than a guess. Picking 8AC
+hides the grader control, since an 8AC record carries its own grading company.
+
+Pasted values are stripped of an `8AC00…` prefix, so `8AC003900265` and `3900265` both work, mixed
+in the same paste. Batch tiles now run `settleIds()` too, so Set ID and Insert ID resolve there
+the same way they do in the single view.
+
 ## Speed — read what you already have
 The cert/8AC lookup returns every copy of the card, and **each row already carries `set_id`,
 `insert_id` and `subset_id`**. `settleIds()` reads them straight out of that response before
@@ -144,6 +153,19 @@ its angles one at a time — with three angles for Set ID and a ~5s Metabase que
 Measured at 5000ms per call, the whole of `settleIds` for a cold card is **7 distinct queries in one
 wave, 5.0s total** — sequentially the same work was 35s.
 Batch mode already runs a 4-worker pool and benefits from the shared cache.
+
+## When the cert lookup returns no copies
+30460's identity join matches on sport + set_name + insert + player_name + set_number +
+parallel_name. A copy that differs on any one of those — commonly `set_name`, e.g.
+`2025 Pokemon SV` vs `2025 Pokemon White Flare` for the same card — drops out of the group, so a
+cert lookup can legitimately come back with **zero siblings** for a card that plainly has them.
+
+The widened `player + card_no` search finds those copies anyway. `mergeSiblings()` keeps them for
+the copies table instead of using one for the value and discarding the rest, deduped by 8AC/cert
+and with the card itself excluded.
+
+That's a workaround. The underlying issue is inconsistent `set_name` on copies of one card, which
+also means anything else grouping by that identity is under-counting.
 
 ## Sibling copies come free with the lookup
 A cert lookup against 30460 returns the matched row **plus every other copy of the same card**.

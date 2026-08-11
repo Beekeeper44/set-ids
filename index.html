@@ -424,14 +424,20 @@
       </div>
       <div id="multiInputs" hidden>
         <div class="certbox">
-          <div class="certlabel">Paste multiple certs — any separator (space, comma, new line)</div>
+          <div class="certlabel">Paste multiple numbers — any separator (space, comma, new line)</div>
           <textarea id="certMulti" placeholder="145065448&#10;137978341&#10;52009639"></textarea>
-          <div class="graderrow"><span>Grader</span>
+          <div class="graderrow"><span>Look up as</span>
+            <select id="batchKind" class="gradersel" onchange="onBatchKind()">
+              <option value="cert">Cert number</option>
+              <option value="ac">8AC number</option>
+            </select>
+          </div>
+          <div class="graderrow" id="batchGraderRow"><span>Grader</span>
             <select id="graderSel2" class="gradersel">
               <option>PSA</option><option>BGS</option><option>SGC</option><option>CGC</option><option>CSG</option>
             </select>
           </div>
-          <button class="save-btn batchbtn" onclick="batchLookup()">Look up certs</button>
+          <button class="save-btn batchbtn" onclick="batchLookup()"><span id="batchBtnLabel">Look up certs</span></button>
           <div class="certtip">Drop/paste a slab image too — it adds the read cert to the list.</div>
         </div>
       </div>
@@ -1368,7 +1374,7 @@ async function settleIds(card, pool){
 
 // Must match BUILD in api/card-match.js. When the API reports something older, the page says so
 // instead of quietly behaving like an old build.
-const APP_BUILD = '2026-08-10-surging';
+const APP_BUILD = '2026-08-11-batch-8ac';
 let apiBuild = null;
 function noteApiBuild(d){
   if(d && d.build){ apiBuild = d.build; paintBuildStamp(); }
@@ -1558,6 +1564,25 @@ async function allCopiesFromSystem(card, extra){
 // for: settling for a nearest-grade copy that happens to be in hand gave an Arena Club 9.5 a CSG
 // 9.5's $15 while its own Arena Club 9.5 twin sat at $25 one query away.
 const isPriced = r => !!(r && r.estimate && Number(r.estimate.value)>0);
+// 30460's identity join is strict — a copy differing on one of set_name / insert / parallel drops
+// out of the group, so a cert lookup can legitimately return zero siblings for a card that has
+// them. The widened player+card_no search finds those copies anyway; keep them for the table
+// instead of using one for the value and discarding the rest.
+function mergeSiblings(card, current, extra){
+  if(!extra || !extra.length) return current || [];
+  const selfAc = idKeyJS(card && card.ac_number), selfCert = idKeyJS(card && card.cert);
+  const seen = {};
+  (current||[]).forEach(r => { const k=idKeyJS(r.ac_number)||idKeyJS(r.cert); if(k) seen[k]=1; });
+  const add = extra.filter(r => {
+    if(!r) return false;
+    const k = idKeyJS(r.ac_number) || idKeyJS(r.cert);
+    if(!k || seen[k]) return false;
+    if(selfAc && idKeyJS(r.ac_number)===selfAc) return false;
+    if(selfCert && idKeyJS(r.cert)===selfCert) return false;
+    seen[k]=1; return true;
+  });
+  return (current||[]).concat(add);
+}
 // Sort valued copies newest-first. Rows with no date sort last rather than jumping to the top.
 // 30460 sends estimated_value_on as US M/D/YYYY ("04/07/2026" = 7 April) and estimated_value_at as
 // "Apr 7, 2026, 1:58 PM", so parse both explicitly rather than trusting Date.parse with the slash
@@ -1594,9 +1619,10 @@ async function findValuedCopy(card, extra, pool, poolIsComplete){
   }
 
   // Nothing exact in hand — ask the system before accepting a nearest-grade stand-in.
-  const wider = (await allCopiesFromSystem(card, extra)).filter(isPriced);
+  const widerAll = await allCopiesFromSystem(card, extra);
+  const wider = widerAll.filter(isPriced);
   const exactWider = pickSibling(wider, company, grade);
-  if(exactWider.row && exactWider.tier===2) return exactWider;
+  if(exactWider.row && exactWider.tier===2) return {tier:exactWider.tier, row:exactWider.row, rows:widerAll};
 
   const seen = {};
   const combined = inHand.concat(wider).filter(r=>{
@@ -1604,7 +1630,8 @@ async function findValuedCopy(card, extra, pool, poolIsComplete){
     if(!k || seen[k]) return false; seen[k]=1; return true;
   });
   const near = pickSibling(combined, company, grade);
-  return near.row ? near : (exactInHand.row ? exactInHand : {tier:0, row:null});
+  const out = near.row ? near : (exactInHand.row ? exactInHand : {tier:0, row:null});
+  return {tier:out.tier, row:out.row, rows:widerAll};
 }
 
 async function resolveFromSystem(card, extra){
@@ -2002,6 +2029,7 @@ async function doLookup(matchUrl, q){
       if(!card.estimate){
         const v = await findValuedCopy(card, null, siblings, siblings.length>0);
         if(v.row) applyEstimate(card, v.row, v.tier);
+        siblings = mergeSiblings(card, siblings, v.rows);
       }
     }
   }
@@ -2077,6 +2105,7 @@ async function doLookup(matchUrl, q){
         if(!card.estimate){
           const v = await findValuedCopy(card, s.card, siblings, siblings.length>0);
           if(v.row) applyEstimate(card, v.row, v.tier);
+          siblings = mergeSiblings(card, siblings, v.rows);
         }
         hadImg = noteImage(card, hadImg, 'sibling');
         if(s.card) fillBlanks(card, s.card);    // Card Hedger → image + anything still blank
@@ -2115,15 +2144,28 @@ async function matchCert(raw){
 
 let multiMode=false;
 let fromBatch=false;
+// Batch can look up either cert numbers or 8ACs. They're indistinguishable by shape — both are
+// 7-9 digits — so it's an explicit choice rather than a guess.
+const batchKind = () => (($('batchKind') && $('batchKind').value) || 'cert');
+function onBatchKind(){
+  const ac = batchKind()==='ac';
+  const row = $('batchGraderRow'); if(row) row.style.display = ac ? 'none' : '';   // 8AC carries its own grader
+  const lbl = $('batchBtnLabel'); if(lbl) lbl.textContent = ac ? 'Look up 8ACs' : 'Look up certs';
+  const ta = $('certMulti');
+  if(ta) ta.placeholder = ac ? '3900265\n3900276\n3900272' : '145065448\n137978341\n52009639';
+  const lab = document.querySelector('#multiInputs .certlabel');
+  if(lab) lab.textContent = 'Paste multiple '+(ac?'8AC numbers':'certs')+' — any separator (space, comma, new line)';
+}
 function setMulti(on){
   multiMode=!!on; fromBatch=false;
   $('singleInputs').hidden=multiMode;
   $('multiInputs').hidden=!multiMode;
   $('matchResult').hidden=true; $('matchBatch').hidden=true; $('matchEmpty').hidden=false;
   $('matchEmpty').innerHTML=multiMode
-    ? '<div class="me-big">▤</div><div>Paste multiple certs on the left, then “Look up certs”.</div>'
+    ? '<div class="me-big">▤</div><div>Paste multiple certs or 8ACs on the left, then look them up.</div>'
     : '<div class="me-big">◎</div><div>Scan or type a cert or 8AC, or drop a label image to look up a card.</div>';
   setTimeout(()=>{ const el=multiMode?$('certMulti'):$('certInput'); if(el) el.focus(); },30);
+  if(multiMode) onBatchKind();
 }
 function openFull(cert){
   fromBatch=true;
@@ -2137,14 +2179,16 @@ function backToBatch(){
   $('matchResult').hidden=true; $('matchEmpty').hidden=true;
   const b=$('matchBatch'); if(b) b.hidden=false;
 }
-async function fetchCompact(cert, grader){
-  let card=null, source='metabase';
-  try{ const r=await fetch('/api/card-match?cert_number='+encodeURIComponent(cert)+'&grader='+encodeURIComponent(grader),{headers:chHeaders()}); if(r.ok){ const d=await r.json(); if(d&&d.card){card=d.card;source=d.source||'metabase';} } }catch(e){}
+async function fetchCompact(cert, grader, kind){
+  let card=null, source='metabase', siblings=[];
+  const param=(kind==='ac'?'ac_number=':'cert_number=');
+  try{ const r=await fetch('/api/card-match?'+param+encodeURIComponent(cert)+'&grader='+encodeURIComponent(grader),{headers:chHeaders()}); if(r.ok){ const d=await r.json(); noteApiBuild(d); if(d&&d.card){card=d.card;source=d.source||'metabase';siblings=d.siblings||[];} } }catch(e){}
   if(!card){ const demo=(typeof DEMO_CARDS!=='undefined')&&DEMO_CARDS[cert]; if(demo) return {card:demo,source:'metabase'}; }
-  const cc=card?String(card.cert||'').replace(/\D/g,''):cert;
+  const cc=card?String(card.cert||'').replace(/\D/g,''):(kind==='ac'?'':cert);
   const g=chGraderFor(card, grader);
-  if(!g){ if(card){ card.sales=null; card.sales_note=chSkipNote(card); } return {card,source}; }
+  if(!cc || !g){ if(card){ card.sales=null; card.sales_note=chSkipNote(card); await settleIds(card, siblings); } return {card,source}; }
   try{ const r2=await fetch('/api/card-sales?cert_number='+encodeURIComponent(cc)+'&grader='+encodeURIComponent(g),{headers:chHeaders()}); if(r2.ok){ const s=await r2.json(); const bad=!!(card&&s.card&&!sameCard(card,s.card)); if(bad){ s.card=null; s.sales=null; } if(!card&&s.card){card=s.card;source='cardhedge';} else if(card&&s.card){ fillBlanks(card,s.card); } if(card){ card.sales=s.sales||null; if(bad) card.sales_note='Card Hedger\u2019s '+g+' cert '+cc+' is a different card.'; } } }catch(e){}
+  if(card) await settleIds(card, siblings);
   return {card,source};
 }
 function compactHTML(card, cert){
@@ -2167,18 +2211,21 @@ function compactHTML(card, cert){
 async function batchLookup(){
   fromBatch=false;
   const raw=($('certMulti')&&$('certMulti').value)||'';
-  const certs=[...new Set(raw.match(/\d{6,12}/g)||[])];
+  const kind=batchKind();
+  // 8ACs may be pasted with the prefix; strip it so 8AC003900265 and 3900265 both work.
+  const certs=[...new Set((raw.replace(/\b8ac0*/gi,'').match(/\d{6,12}/g))||[])];
   const grader=($('graderSel2')&&$('graderSel2').value)||'PSA';
+  const noun=(kind==='ac'?'8AC':'cert');
   $('matchEmpty').hidden=true; $('matchResult').hidden=true; $('matchBatch').hidden=false;
-  if(!certs.length){ $('matchBatch').innerHTML='<div class="bhead">Paste one or more cert numbers above, then Look up.</div>'; return; }
-  $('matchBatch').innerHTML='<div class="bhead">'+certs.length+' cert'+(certs.length>1?'s':'')+'</div><div class="bgrid" id="bgrid"></div>';
+  if(!certs.length){ $('matchBatch').innerHTML='<div class="bhead">Paste one or more '+noun+' numbers above, then Look up.</div>'; return; }
+  $('matchBatch').innerHTML='<div class="bhead">'+certs.length+' '+noun+(certs.length>1?'s':'')+'</div><div class="bgrid" id="bgrid"></div>';
   const grid=$('bgrid');
   certs.forEach(ct=>{ const d=document.createElement('div'); d.className='ccard loading'; d.id='cc_'+ct; d.innerHTML='<div class="cimg"></div><div class="cbody"><div class="ccert">'+esc(ct)+'</div><div class="ctitle">Looking up…</div></div>'; grid.appendChild(d); });
   let i=0; const pool=Math.min(4,certs.length);
   async function worker(){
     while(i<certs.length){
       const ct=certs[i++];
-      let card=null; try{ const r=await fetchCompact(ct, grader); card=r.card; }catch(e){}
+      let card=null; try{ const r=await fetchCompact(ct, grader, kind); card=r.card; }catch(e){}
       const el=document.getElementById('cc_'+ct);
       if(el) el.outerHTML=compactHTML(card, ct);
     }
