@@ -1,16 +1,20 @@
 # Set IDs + Card Match → Vercel
 
-A single-page app with two tabs:
+A single-page app with three tabs:
 
 - **Sets** — a browsable/searchable Set ID registry synced live from Metabase question **21088 ("set-ids")**.
 - **Card Match** — look up a graded card by **cert** (type, scan, or OCR a label image) against Metabase question **30460 ("card-match")**, with **Card Hedger** comparable sales shown to the right and Card Hedger as a card-details fallback.
+- **Image Match** — drop a raw card scan or an Arena Club slab label and read the card's identity off the image itself, entirely in the browser, then score it against the Set ID registry. No cert required.
 
 ```
 vercel-setids/
-├─ index.html          the app
+├─ index.html          the app (all three tabs)
 ├─ api/
 │  ├─ set-ids.js       proxy → Metabase 21088 (Sets tab)
-│  └─ card-match.js    proxy → Metabase 30460 + Card Hedger (Card Match tab)
+│  ├─ card-match.js    proxy → Metabase 30460 + Card Hedger (Card Match + Image Match)
+│  ├─ card-sales.js    proxy → Card Hedger comparable sales
+│  ├─ card-ocr.js      proxy → Card Hedger label OCR
+│  └─ ch-test.js       Card Hedger connectivity check
 ├─ package.json
 ├─ vercel.json
 └─ README.md
@@ -102,15 +106,6 @@ missing, which is why 8AC 3902111 (the only Arena Club 9.5 carrying a value) was
 every other copy of that card — the seed-card exemption meant it appeared when searched directly
 and vanished otherwise.
 
-## Batch: certs or 8ACs
-The multi-lookup panel has a **Look up as** selector — Cert number or 8AC number. They can't be
-told apart by shape (both 7–9 digits), so it's an explicit choice rather than a guess. Picking 8AC
-hides the grader control, since an 8AC record carries its own grading company.
-
-Pasted values are stripped of an `8AC00…` prefix, so `8AC003900265` and `3900265` both work, mixed
-in the same paste. Batch tiles now run `settleIds()` too, so Set ID and Insert ID resolve there
-the same way they do in the single view.
-
 ## Speed — read what you already have
 The cert/8AC lookup returns every copy of the card, and **each row already carries `set_id`,
 `insert_id` and `subset_id`**. `settleIds()` reads them straight out of that response before
@@ -153,19 +148,6 @@ its angles one at a time — with three angles for Set ID and a ~5s Metabase que
 Measured at 5000ms per call, the whole of `settleIds` for a cold card is **7 distinct queries in one
 wave, 5.0s total** — sequentially the same work was 35s.
 Batch mode already runs a 4-worker pool and benefits from the shared cache.
-
-## When the cert lookup returns no copies
-30460's identity join matches on sport + set_name + insert + player_name + set_number +
-parallel_name. A copy that differs on any one of those — commonly `set_name`, e.g.
-`2025 Pokemon SV` vs `2025 Pokemon White Flare` for the same card — drops out of the group, so a
-cert lookup can legitimately come back with **zero siblings** for a card that plainly has them.
-
-The widened `player + card_no` search finds those copies anyway. `mergeSiblings()` keeps them for
-the copies table instead of using one for the value and discarding the rest, deduped by 8AC/cert
-and with the card itself excluded.
-
-That's a workaround. The underlying issue is inconsistent `set_name` on copies of one card, which
-also means anything else grouping by that identity is under-counting.
 
 ## Sibling copies come free with the lookup
 A cert lookup against 30460 returns the matched row **plus every other copy of the same card**.
@@ -623,6 +605,77 @@ distinguishable in the column — right now every consumer of 30460 sees them id
   same text in both rows.
 - **Broken image URLs** fall back to the "no image" placeholder instead of the browser's broken-image
   icon (`imgFail()`).
+
+## Image Match
+
+Drop a scan; no cert needed. Everything runs client-side via **tesseract.js** (already loaded
+for the cert OCR), so a lookup costs nothing, makes no server round trip, and has no daily cap.
+
+### Matte vs foil is the whole design
+Tesseract's accuracy on a card is almost entirely a question of what the ink sits on:
+
+| Surface | Regions | Result |
+|---|---|---|
+| **Back** — matte, flat ink, high contrast | set line, card no., serial, nameplate | reliable |
+| **Front** — foil on refractor, specular | insert banner, RC shield | unreliable; capped at MED |
+
+So the back does the identification and the front only contributes what exists nowhere else.
+
+### Slab label beats the card
+An Arena Club label is flat white ink on a matte plate and carries **the parallel name**, which
+the card face never prints. One region, one read, more fields than six regions off the card:
+
+```
+2023-24 Panini Mosaic   → year, brand, set
+Blue Mosaic             → parallel name
+#262 - 115/199          → card no., serial, parallel total
+AUSAR THOMPSON          → player
+```
+
+Lines are matched by shape, not position, so a base card with no parallel line doesn't shift
+the player into the parallel field. Note the label carries the parallel but **not** the subset
+("NBA Debut" appears on the card face only) — the two paths are complementary.
+
+### Pipeline
+1. **Split** — aspect ratio picks the mode: `>2.2:1` slab label, `>1.15:1` front+back pair,
+   taller than wide a single card. Halves are swap-corrected by which side has the text block.
+2. **Trim** — backdrop detected from the four corners, then trimmed, *whatever colour it is*.
+   Scans arrive matted on white as often as black, and an untrimmed matte offsets every crop
+   below it.
+3. **Read** — regions cut by fraction, each dispatched across a **4-worker pool** in one wave.
+   Polarity is chosen from the crop's mean luminance so the common case is one `recognize`, not
+   two; the second is only spent when the first fails the caller's pattern. Otsu binarization,
+   area-capped upscaling.
+4. **Parse** — four parsers (`imParseSetLine`, `imParseNameplate`, `imParseBanner`,
+   `imParseLabel`). The full back-foot panel is a **lazy fallback** — on a clean scan it never runs.
+5. **Match** — the Sets tab has already loaded all of 21088, so set scoring is client-side and
+   free. Score normalises against the best a row could earn rather than clamping, so an exact
+   `Panini Mosaic` visibly outranks a superset `Panini Prizm Mosaic`.
+6. **Vault** — `/api/card-match` is queried automatically for `insert_id` / `subset_id` / the
+   parallel as your data spells it. Those rows carry a **VAULT** pill; everything else carries
+   HIGH / MED / LOW.
+
+### Test buttons
+`Test read · card` and `Test read · label` stub **only** the call into Tesseract. Regions, worker
+fan-out, fallbacks, parsers and scoring all execute for real, so the progress counter and timing
+are genuine. The card test loads an embedded demo scan through the real drop path.
+
+The stub is keyed on the region labels `imRun` passes to `imReadSmart` — `set line`, `card no.`,
+`serial`, `nameplate`, `front banner`, `rc shield`, `back foot`. Rename a region without updating
+`IM_FIXTURES` and the test fails loudly, which is the point.
+
+> The embedded demo scan (`IM_DEMO_SCAN`) is ~136 KB of base64. Delete that one `const` and the
+> two `imTestCard` lines that use it if you don't want a demo image in production.
+
+### Known limits
+- **Crop fractions are tuned to this Panini layout.** Other manufacturers will need adjusting.
+  The *Regions read* section at the bottom of the panel shows the preprocessed crops and the raw
+  text per region, so you can tell whether the crop missed or the OCR did.
+- **Parallel name is unresolvable from the card face.** Panini doesn't print it. It comes from
+  the slab label, or from `SELECT DISTINCT parallel_name, parallel_total` off 30460.
+- **Sport is a scoring nudge, not a filter.** On auto, `Panini Mosaic` appears under Basketball,
+  Baseball, Football and Soccer within a few points of each other — four different Set IDs. Pin
+  the Sport dropdown.
 
 ## OCR
 "Drop a graded-label image" reads the cert with Tesseract.js (cdnjs) and auto-matches. Use a
