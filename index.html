@@ -2602,9 +2602,7 @@ function imSplit(){
     const a=imTrim(imFromRegion(full,0,0,.5,1));
     const b=imTrim(imFromRegion(full,.5,0,.5,1));
     if(mode==='fb'){ front=a; back=b; } else { front=b; back=a; }
-    // A back has a big light text block low-centre; a front rarely does. If the
-    // halves look swapped, swap them rather than reading the wrong regions.
-    if(imBackScore(back) < imBackScore(front)){ const t=front; front=back; back=t; }
+    // Orientation is settled in imRun from the text, not guessed from pixels here.
   } else if(mode==='back'){ back=imTrim(full); }
   else { front=imTrim(full); }
 
@@ -2632,17 +2630,28 @@ function imPane(cap, cv, w){
   return d;
 }
 
-// Cheap "is this the back?" heuristic: backs carry a wide light paragraph panel
-// in the middle third, fronts carry a photo.
-function imBackScore(cv){
-  if(!cv) return -1;
-  const r=imFromRegion(cv,.15,.35,.7,.35);
-  const s=imCanvas(120,120*r.height/r.width);
-  s.getContext('2d').drawImage(r,0,0,s.width,s.height);
-  const d=s.getContext('2d').getImageData(0,0,s.width,s.height).data;
-  let light=0, n=0;
-  for(let i=0;i<d.length;i+=4){ const l=.299*d[i]+.587*d[i+1]+.114*d[i+2]; if(l>170) light++; n++; }
-  return light/n;
+// Which half is the back?
+//
+// This used to be a brightness heuristic: backs have a big light paragraph
+// panel, fronts have a photo. That held for a Mosaic basketball card with a
+// white text box and broke immediately on a Mosaic football card whose back is
+// dark and whose front is bright holo \u2014 the two got swapped, so the set-line
+// crop landed on the front nameplate and the nameplate crop landed on the stat
+// table. Every field was read off the wrong card.
+//
+// Pixels can't tell these apart reliably. Text can, and both panels are read
+// whole anyway, so decide from what they actually say: only a back carries a
+// year-plus-sport line, a copyright notice and a row of statistics.
+function imBackness(t){
+  const s=String(t||'');
+  if(!s) return -1;
+  let sc=0;
+  if(imPickSetLine(s)) sc+=5;
+  if(/\u00a9|copyright|rights reserved|properties,? inc/i.test(s)) sc+=3;
+  const lines=s.split(/\n+/);
+  if(lines.some(l=>(l.match(/\b[\d.]{1,5}\b/g)||[]).length>=6)) sc+=3;   // stat row
+  sc+=Math.min(3, s.replace(/\s/g,'').length/250);                      // backs carry more text
+  return sc;
 }
 
 /* ---------- preprocessing ---------- */
@@ -2766,7 +2775,7 @@ function imMeanLum(cv){
   return n?t/n:128;
 }
 
-async function imReadSmart(region, psm, whitelist, test, label){
+async function imReadSmart(region, psm, whitelist, test, label, gray){
   // Test mode intercepts here and nowhere else. Everything upstream (which
   // regions get cut, in what order, on how many workers) and everything
   // downstream (parsing, fallbacks, scoring) is the real thing.
@@ -2780,16 +2789,26 @@ async function imReadSmart(region, psm, whitelist, test, label){
   const order = dark ? [true,false] : [false,true];
   const ok = r => test ? test(r.text) : (r.conf>=72 && /[A-Za-z0-9]{3}/.test(r.text));
 
-  const p1=imPrep(region,{invert:order[0]});
-  if(label) IM.crops.push({label: label+(order[0]?' \u25aa inv':''), canvas:p1});
-  const r1=await imRead(p1, psm, whitelist);
-  if(ok(r1)) return r1;
+  // Otsu is a global threshold. On a flat panel it's ideal; over a chevron or
+  // refractor background the pattern wins the histogram and the glyphs get
+  // swallowed \u2014 which is exactly what happened to the serial and the card
+  // number. So those regions get a grayscale pass too: Tesseract reads
+  // grayscale fine, and skipping the threshold keeps thin foil strokes alive.
+  const tries=[{invert:order[0],binarize:true},{invert:order[1],binarize:true}];
+  if(gray) tries.push({invert:order[0],binarize:false},{invert:order[1],binarize:false});
 
-  const p2=imPrep(region,{invert:order[1]});
-  if(label) IM.crops.push({label: label+(order[1]?' \u25aa inv':''), canvas:p2});
-  const r2=await imRead(p2, psm, whitelist);
-  if(ok(r2)) return r2;
-  return r2.conf>r1.conf ? r2 : r1;
+  let best={text:'',conf:0};
+  for(const t of tries){
+    const prepped=imPrep(region,{invert:t.invert, binarize:t.binarize});
+    if(label) IM.crops.push({
+      label: label+(t.invert?' \u25aa inv':'')+(t.binarize?'':' \u25aa gray'),
+      canvas: prepped
+    });
+    const r=await imRead(prepped, psm, whitelist);
+    if(ok(r)) return r;
+    if(r.conf>best.conf) best=r;
+  }
+  return best;
 }
 
 /* ---------- colour ---------- */
@@ -3073,58 +3092,47 @@ async function imRun(){
     if(IM.stub) imProg('Test run \u2014 OCR stubbed, pipeline live',6);
     else { imProg('Warming OCR workers\u2026',6); await imBoot(); }
 
-    // The full back-foot panel is the largest and slowest region on the card, and
-    // it exists only as a fallback for three targeted reads. Make it lazy: on a
-    // clean scan it never runs at all.
-    let footP=null;
-    const foot = () => {
-      if(!footP) footP = IM.back
-        ? imReadSmart(imFromRegion(IM.back,0,.70,1,.30),'6','',null,'back foot').then(r=>r.text)
-        : Promise.resolve('');
-      return footP;
-    };
+    // PASS 1 \u2014 read both panels whole. This is the primary source (crops assume a
+    // layout and vanish when one lands wrong) and it's also what settles which
+    // panel is the back, before a single crop is cut.
+    let backAll='', frontAll='';
+    const res={};
 
-    // Label mode short-circuits the whole card pipeline: one region, one read, and
-    // it yields more fields than six regions off the card ever will.
-    if(IM.mode==='label' && IM.label){
-      imProg('Reading the slab label\u2026',30);
-      const lr=await imReadSmart(IM.label,'6','',t=>/(19|20)\d{2}/.test(t),'slab label');
-      IM.raw.label=lr.text;
-      const lp=imParseLabel(lr.text);
-      Object.assign(f,{
-        year:lp.year, brand:lp.brand, set:lp.set, player:lp.player,
-        card_no:lp.card_no, serial:lp.serial, parallel_total:lp.parallel_total,
-        parallel:lp.parallel
-      });
-      conf.set = (lp.year&&lp.set)?'hi':'lo';
-      conf.year = lp.year?'hi':'lo';
-      conf.brand = lp.brand?'hi':'lo';
-      conf.player = lp.player?'hi':'lo';
-      conf.card_no = lp.card_no?'hi':'lo';
-      conf.parallel_total = lp.parallel_total?'hi':'none';
-      conf.parallel = lp.parallel?'hi':'none';   // printed outright \u2014 not inferred
-      conf.sport = 'none'; conf.insert='none'; conf.rookie='none'; conf.colour='none';
-
-      imProg('Matching the registry\u2026',88);
-      IM.fields=f; IM.conf=conf;
-      IM.cands=imMatchSets(f);
-      if(IM.cands.length && IM.cands[0].__score>=.72) IM.chosen=0;
-      imRender();
-      if(!IM.stub) imVault();
-      imProg((IM.stub?'Test run \u00b7 ':'Done in ')+((performance.now()-t0)/1000).toFixed(1)+'s \u00b7 label',100);
-      setTimeout(()=>imProg('',0),2600);
-      return;
+    if(IM.stub){
+      backAll  = IM.back  ? (await imReadSmart(IM.back, '6','',null,'back \u2014 whole')).text  : '';
+      frontAll = IM.front ? (await imReadSmart(IM.front,'6','',null,'front \u2014 whole')).text : '';
+    } else if(IM.front && IM.back){
+      imProg('Identifying front and back\u2026',12);
+      const [a,b]=await Promise.all([
+        imReadSmart(IM.front,'6','',null,'panel A \u2014 whole'),
+        imReadSmart(IM.back, '6','',null,'panel B \u2014 whole')
+      ]);
+      if(imBackness(a.text) > imBackness(b.text)){
+        const t=IM.front; IM.front=IM.back; IM.back=t;      // they were the other way round
+        backAll=a.text; frontAll=b.text;
+        IM.shots=[['Front',IM.front],['Back',IM.back]];
+      } else {
+        backAll=b.text; frontAll=a.text;
+      }
+    } else if(IM.back){
+      backAll=(await imReadSmart(IM.back,'6','',null,'back \u2014 whole')).text;
+    } else if(IM.front){
+      frontAll=(await imReadSmart(IM.front,'6','',null,'front \u2014 whole')).text;
     }
+    IM.raw.backwhole=backAll; IM.raw.frontwhole=frontAll;
 
+    // PASS 2 \u2014 targeted crops, now that we know which panel is which. These
+    // refine what the whole-panel read already gives; where a crop fails, the
+    // full text below still carries the field.
     const jobs=[];
     if(IM.back){
       const B=IM.back;
-      jobs.push(['set', imReadSmart(imFromRegion(B,.14,.866,.76,.046),'6','',
+      jobs.push(['set', imReadSmart(imFromRegion(B,.10,.855,.82,.065),'6','',
                   t=>/(19|20)\d{2}/.test(t)&&/[A-Za-z]{4}/.test(t),'set line')]);
-      jobs.push(['no',  imReadSmart(imFromRegion(B,.39,.026,.26,.062),'6','',
-                  t=>/\d/.test(imFixDigits(t)),'card no.')]);
-      jobs.push(['ser', imReadSmart(imFromRegion(B,.64,.014,.34,.078),'7','0123456789/',
-                  t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial')]);
+      jobs.push(['no',  imReadSmart(imFromRegion(B,.38,.022,.28,.070),'7','',
+                  t=>/\d{2,4}/.test(imFixDigits(t)),'card no.', true)]);
+      jobs.push(['ser', imReadSmart(imFromRegion(B,.62,.010,.36,.084),'7','0123456789/',
+                  t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial', true)]);
       jobs.push(['np',  imReadSmart(imFromRegion(B,.20,.438,.70,.084),'6','',null,'nameplate')]);
     }
     if(IM.front){
@@ -3134,58 +3142,58 @@ async function imRun(){
                   t=>/ROOK|RC/i.test(t),'rc shield')]);
     }
 
-    // Every region goes out at once across the pool.
-    const res={}; let done=0;
+    let done=0;
     await Promise.all(jobs.map(async ([k,p])=>{
       res[k]=await p; done++;
-      imProg('Read '+done+'/'+jobs.length+' regions',12+Math.round(62*done/jobs.length));
+      imProg('Read '+done+'/'+jobs.length+' regions',30+Math.round(46*done/jobs.length));
     }));
-    imProg('Parsing\u2026',78);
+    ['set','no','ser','np','ban','rc'].forEach(k=>{ if(!res[k]) res[k]={text:'',conf:0}; });
+    imProg('Parsing\u2026',80);
 
     if(IM.back){
       IM.raw.setline=res.set.text;
-      let parsed=imParseSetLine(res.set.text);
+
+      // Score the crop AND the whole panel together. imPickSetLine picks the
+      // best-looking set line out of everything on offer, so a clipped crop is
+      // simply outscored by the same line read off the full back.
+      let parsed=imParseSetLine(res.set.text+'\n'+backAll);
       conf.set = parsed.year&&parsed.set ? 'hi' : (parsed.year?'mid':'lo');
 
-      if(!parsed.year || !parsed.set){
-        const ft=await foot(); IM.raw.backfoot=ft;
-        const alt=imParseSetLine(ft);
-        parsed={ year:parsed.year||alt.year, brand:parsed.brand||alt.brand,
-                 set:parsed.set||alt.set, sport:parsed.sport||alt.sport };
-        if(parsed.year&&parsed.set) conf.set='mid';
-      }
       Object.assign(f,{year:parsed.year,brand:parsed.brand,set:parsed.set,sport:parsed.sport});
-      // Year, brand and set all come out of the one copyright line, so they
-      // inherit its confidence rather than rendering a blank pill next to a
-      // value that plainly did read.
+      // Sport is worth recovering on its own: it's a hard filter on the registry
+      // and the word appears somewhere on almost every back even when the set
+      // line itself reads badly ("MOSAIC DASKETRALL").
+      if(!f.sport){
+        for(const k of Object.keys(SPORT_WORDS)){
+          if(new RegExp('\\b'+k+'\\b','i').test(backAll)){ f.sport=SPORT_WORDS[k]; break; }
+        }
+      }
       conf.year  = f.year  ? conf.set : 'none';
       conf.brand = f.brand ? conf.set : 'none';
-      conf.sport = f.sport ? 'hi' : 'none';   // matched a known sport word
-      f.parallel_marker = /\bPRIZM\b/i.test(res.set.text+' '+(IM.raw.backfoot||''));
+      conf.sport = f.sport ? (parsed.sport?'hi':'mid') : 'none';
+      f.parallel_marker = /\bPRIZM\b/i.test(res.set.text+' '+backAll);
 
       IM.raw.cardno=res.no.text;
       f.card_no=imCardNo(res.no.text);
       if(f.card_no) conf.card_no='hi';
       else {
-        const ft=await foot(); IM.raw.backfoot=ft;
-        // In the whole-panel fallback there ARE other numbers around, so anchor
-        // on the "No." marker rather than taking the longest run on the card.
-        const nm2=ft.match(/\b[NMW][o0O]?\.?\s*(\d{1,4})\b/i);
+        // In the whole panel there ARE other numbers, so anchor on the "No."
+        // marker instead of taking the longest run anywhere on the card.
+        const nm2=backAll.match(/\b[NMW][o0O]?\s*[\.\u00b0]?\s*(\d{1,4})\b/i);
         if(nm2){ f.card_no=nm2[1].replace(/^0+(?=\d)/,''); conf.card_no='mid'; }
       }
 
       IM.raw.serial=res.ser.text;
       let sm=imFixDigits(res.ser.text).match(/(\d{1,5})\s*\/\s*(\d{1,5})/);
-      if(!sm){
-        const ft=await foot(); IM.raw.backfoot=ft;
-        sm=imFixDigits(ft).match(/(\d{1,5})\s*\/\s*(\d{1,5})/);
-      }
+      let serLvl='hi';
+      if(!sm){ sm=imFixDigits(backAll).match(/(\d{1,5})\s*\/\s*(\d{1,5})/); serLvl='mid'; }
       if(sm && Number(sm[2])>0 && Number(sm[1])<=Number(sm[2])){
-        f.serial=sm[1]+'/'+sm[2]; f.parallel_total=sm[2]; conf.parallel_total='hi';
+        f.serial=sm[1]+'/'+sm[2]; f.parallel_total=sm[2]; conf.parallel_total=serLvl;
       } else conf.parallel_total='none';
 
       IM.raw.nameplate=res.np.text;
-      const np=imParseNameplate(res.np.text);
+      let np=imParseNameplate(res.np.text);
+      if(!np.player) np=imParseNameplate(backAll);
       f.player=np.player; f.team=np.team;
       conf.player=f.player?'hi':'lo';
       conf.team=f.team?conf.player:'none';
@@ -3193,14 +3201,14 @@ async function imRun(){
 
     if(IM.front){
       IM.raw.banner=res.ban.text;
-      f.insert=imParseBanner(res.ban.text, f.player);
+      f.insert=imParseBanner(res.ban.text, f.player) || imParseBanner(frontAll, f.player);
       conf.insert=f.insert?'mid':'lo';       // foil \u2014 never better than mid unaided
       if(!f.player){
         const np=imParseNameplate(res.ban.text);
         f.player=np.player; f.team=np.team||f.team;
         conf.player='lo';
       }
-      f.rookie=/ROOK|\bRC\b/i.test((res.rc?res.rc.text:'')+' '+res.ban.text);
+      f.rookie=/ROOK|\bRC\b/i.test((res.rc?res.rc.text:'')+' '+res.ban.text+' '+frontAll);
       conf.rookie=f.rookie?'mid':'none';
       f.colour = IM.stub ? (IM.stubColour||null) : imBorderColour(IM.front);
       conf.colour=f.colour?'hi':'none';
@@ -3214,7 +3222,7 @@ async function imRun(){
     imRender();
     if(!IM.stub) imVault();      // fire and forget \u2014 it redraws when it lands
     const secs=((performance.now()-t0)/1000).toFixed(1);
-    imProg((IM.stub?'Test run \u00b7 ':'Done in ')+secs+'s \u00b7 '+jobs.length+' regions'+(footP?' + fallback':''),100);
+    imProg((IM.stub?'Test run \u00b7 ':'Done in ')+secs+'s \u00b7 '+jobs.length+' regions',100);
     setTimeout(()=>imProg('',0),2600);
   }catch(e){
     imProg('',0);
@@ -3274,7 +3282,12 @@ const IM_FIXTURES = {
     'nameplate':    'AUSAR THOMPSON\nDETROIT PISTONS',
     'front banner': 'NBA DEBUT\nAUSAR THOMPSON\nDETROIT PISTONS',
     'rc shield':    'ROOKIE RC CARD',
-    'back foot':    '2023-24 PANINI - MOSAIC BASKETBALL\n\u00a9 2024 Panini America, Inc.'
+    'back \u2014 whole':  'No. 262    115/199\nAUSAR THOMPSON\nDETROIT PISTONS\n'+
+                      'Thompson couldn\u2019t wait to make Detroit history.\n'+
+                      'joining Zeljko Rebraca (2001-02) and Terry Tyler (1978-79).\n'+
+                      'YEAR TEAM G FG% FT% 3PM RPG APG STL BLK PTS PPG\n'+
+                      'PRIZM\n2023-24 PANINI - MOSAIC BASKETBALL',
+    'front \u2014 whole': 'MOSAIC\nROOKIE RC CARD\nNBA DEBUT\nAUSAR THOMPSON\nDETROIT PISTONS'
   },
   // Border colour is sampled from pixels, not parsed from text, so there's no
   // region to stub \u2014 it's supplied directly.
@@ -3464,7 +3477,7 @@ function imRender(){
         imField('team','Team',f.team,true)+
         imField('card_no','Card No.',f.card_no,true)+
         imField('rookie','Rookie',f.rookie?'Yes':'',false)+
-        imField('colour','Border color',f.colour?(sw+esc(f.colour.name)):'',false,true)+
+        imField('colour','Color',f.colour?(sw+esc(f.colour.name)):'',false,true)+
         imField('parallel_total','Parallel total',f.parallel_total?('/'+f.parallel_total):'',false,'mono')+
       '</div>'+
     '</div>'+
