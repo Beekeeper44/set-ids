@@ -2859,26 +2859,54 @@ function imYear(line){
   return { raw:m[1], year:fixed.replace(/\s*[-\u2013\u2014\/]\s*/,'-') };
 }
 
+// The copyright strip is one line, but a crop can catch neighbours and the
+// back-foot fallback is a whole panel. The old version flattened everything into
+// one string and took the FIRST year it found \u2014 which on this card is
+// "Terry Tyler (1978-79)" in the bio paragraph, not the set line at all. Then
+// everything between that and the word BASKETBALL became the "brand": the entire
+// stat table.
+//
+// So score the lines and parse the winner. A real set line has a year AND a sport
+// word, is short, and is mostly capitals. Bio text has parentheses and runs long.
+function imPickSetLine(text){
+  const lines=String(text||'').split(/\n+/).map(l=>l.replace(/\s+/g,' ').trim()).filter(l=>l.length>5);
+  if(!lines.length) return '';
+  let best='', bestScore=-1e9;
+  lines.forEach(l=>{
+    const words=l.split(/\s+/);
+    let sc=0;
+    if(imYear(l)) sc+=2;
+    if(Object.keys(SPORT_WORDS).some(k=>new RegExp('\\b'+k+'\\b','i').test(l))) sc+=4;
+    const letters=(l.match(/[A-Za-z]/g)||[]).length;
+    const caps=(l.match(/[A-Z]/g)||[]).length;
+    if(letters && caps/letters>.7) sc+=1;
+    if(/[()]/.test(l)) sc-=3;                 // bio prose
+    if(words.length>10) sc-=3;                // stat table / long sentence
+    if(/\u00a9|copyright|rights reserved/i.test(l)) sc-=2;
+    if(sc>bestScore){ bestScore=sc; best=l; }
+  });
+  return bestScore>0 ? best : '';
+}
+
 function imParseSetLine(text){
   const out={ year:'', brand:'', set:'', sport:'' };
-  const flat=String(text||'').replace(/\s+/g,' ').trim();
+  const flat=imPickSetLine(text);
+  if(!flat) return out;
 
   const ym=imYear(flat);
   if(ym) out.year=ym.year;
 
   let sportWord='';
   for(const k of Object.keys(SPORT_WORDS)){
-    const re=new RegExp('\\b'+k+'\\b','i');
-    if(re.test(flat)){ sportWord=k; out.sport=SPORT_WORDS[k]; break; }
+    if(new RegExp('\\b'+k+'\\b','i').test(flat)){ sportWord=k; out.sport=SPORT_WORDS[k]; break; }
   }
 
-  // Everything between the year and the sport word is the manufacturer + set.
   if(out.year){
     const after=flat.slice(flat.indexOf(ym.raw)+ym.raw.length);
     let mid=after;
     if(sportWord){ const ix=mid.toLowerCase().indexOf(sportWord); if(ix>0) mid=mid.slice(0,ix); }
     mid=mid.replace(/[^A-Za-z0-9&'\u2013\u2014\-\. ]/g,' ').replace(/\s+/g,' ').trim();
-    const parts=mid.split(/\s*[-\u2013\u2014]\s*/).map(p=>p.trim()).filter(Boolean);
+    const parts=mid.split(/\s*[-\u2013\u2014]\s*/).map(x=>x.trim()).filter(Boolean);
     if(parts.length>=2){ out.brand=parts[0]; out.set=parts.slice(1).join(' '); }
     else if(parts.length===1){
       const w=parts[0].split(/\s+/);
@@ -2888,9 +2916,36 @@ function imParseSetLine(text){
   return out;
 }
 
+// A nameplate crop can catch the jersey lettering above the bar, which OCRs as
+// junk like "REO ." \u2014 and being first, it became the player while the real name
+// slid into Team. Require a line to look like a name before accepting it.
+// "No. 262" in Panini's bold italic OCRs as "WB. 262" often enough to matter.
+// imFixDigits then maps B->8, and a regex that allows a letter prefix happily
+// captures "W8" and stops \u2014 the real number is never even considered.
+//
+// A letter prefix is only meaningful when it's hyphenated (BDC-25, RC-10). Bare
+// leading letters on a card back are the "No." glyphs, so take the longest digit
+// run instead and let the noise fall away.
+function imCardNo(text){
+  const raw=String(text||'');
+  const hy=raw.match(/\b([A-Z]{1,4}\s*-\s*\d{1,4})\b/i);
+  if(hy) return hy[1].replace(/\s+/g,'').toUpperCase();
+  const runs=imFixDigits(raw).match(/\d{1,5}/g)||[];
+  if(!runs.length) return '';
+  runs.sort((a,b)=>b.length-a.length || Number(b)-Number(a));
+  return runs[0].replace(/^0+(?=\d)/,'');
+}
+
 function imParseNameplate(text){
-  const lines=String(text||'').split(/\n+/).map(l=>l.replace(/[^A-Za-z0-9'\.\- ]/g,' ').replace(/\s+/g,' ').trim()).filter(l=>l.length>2);
-  const caps=lines.filter(l=>/[A-Za-z]/.test(l) && l===l.toUpperCase());
+  const lines=String(text||'').split(/\n+/)
+    .map(l=>l.replace(/[^A-Za-z0-9'\.\- ]/g,' ').replace(/\s+/g,' ').trim())
+    .filter(l=>{
+      const letters=(l.match(/[A-Za-z]/g)||[]).length;
+      if(letters<4) return false;                        // "REO ." never survives this
+      if(letters/l.replace(/\s/g,'').length < .7) return false;
+      return true;
+    });
+  const caps=lines.filter(l=>l===l.toUpperCase());
   const pool=caps.length?caps:lines;
   return { player: pool[0]||'', team: pool[1]||'' };
 }
@@ -2945,8 +3000,8 @@ function imParseLabel(text){
       return;
     }
     if(/#\s*[A-Z]{0,3}-?\d/i.test(fx) || /\d{1,5}\s*\/\s*\d{1,5}/.test(fx)){
-      const cm=fx.match(/#\s*([A-Z]{0,3}-?\d{1,4})/i);
-      if(cm) out.card_no=cm[1].replace(/^0+(?=\d)/,'');
+      const cm=l.match(/#\s*([A-Z]{1,4}\s*-\s*\d{1,4}|\d{1,4})/i);
+      if(cm) out.card_no=cm[1].replace(/\s+/g,'').replace(/^0+(?=\d)/,'').toUpperCase();
       const sm=fx.match(/(\d{1,5})\s*\/\s*(\d{1,5})/);
       if(sm && Number(sm[2])>0 && Number(sm[1])<=Number(sm[2])){
         out.serial=sm[1]+'/'+sm[2]; out.parallel_total=sm[2];
@@ -2986,11 +3041,14 @@ function imMatchSets(f){
     if(brandN && imNorm(r.brand)===brandN) score+=.12;              // manufacturer agrees
     if(imNorm(r.set)===imNorm([f.brand,f.set].join(' '))) score+=.18; // "Panini Mosaic" exactly
     if(f.sport && r.__sport===f.sport) score+=.06;
+    // Live registry set names carry the year ("2023-24 Panini Mosaic"), so a year
+    // agreement is real evidence — without unbalancing seed rows, which have none.
+    if(f.year && imNorm(r.set).indexOf(imNorm(f.year))>=0) score+=.15;
     // Normalise against the best score a row could possibly earn rather than
     // clamping at 1. Clamping flattened the top of the list: an exact "Panini
     // Mosaic" and a superset "Panini Prizm Mosaic" both pegged at 100, which
     // hid the gap that makes the first one the right answer.
-    return Object.assign({__score: score/1.36}, r);
+    return Object.assign({__score: Math.min(1, score/1.36)}, r);
   }).filter(Boolean);
 
   scored.sort((a,b)=>b.__score-a.__score || a.set.length-b.set.length);
@@ -3061,13 +3119,13 @@ async function imRun(){
     const jobs=[];
     if(IM.back){
       const B=IM.back;
-      jobs.push(['set', imReadSmart(imFromRegion(B,.16,.875,.72,.075),'7','',
+      jobs.push(['set', imReadSmart(imFromRegion(B,.14,.866,.76,.046),'6','',
                   t=>/(19|20)\d{2}/.test(t)&&/[A-Za-z]{4}/.test(t),'set line')]);
-      jobs.push(['no',  imReadSmart(imFromRegion(B,.42,.035,.40,.10),'7','',
+      jobs.push(['no',  imReadSmart(imFromRegion(B,.39,.026,.26,.062),'6','',
                   t=>/\d/.test(imFixDigits(t)),'card no.')]);
-      jobs.push(['ser', imReadSmart(imFromRegion(B,.74,.02,.26,.11),'7','0123456789/',
+      jobs.push(['ser', imReadSmart(imFromRegion(B,.64,.014,.34,.078),'7','0123456789/',
                   t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial')]);
-      jobs.push(['np',  imReadSmart(imFromRegion(B,.18,.40,.74,.15),'6','',null,'nameplate')]);
+      jobs.push(['np',  imReadSmart(imFromRegion(B,.20,.438,.70,.084),'6','',null,'nameplate')]);
     }
     if(IM.front){
       const F=IM.front;
@@ -3106,12 +3164,14 @@ async function imRun(){
       f.parallel_marker = /\bPRIZM\b/i.test(res.set.text+' '+(IM.raw.backfoot||''));
 
       IM.raw.cardno=res.no.text;
-      const nm=imFixDigits(res.no.text).match(/(?:N[o0]\.?\s*)?([A-Z]{0,3}-?\d{1,4})\b/i);
-      if(nm){ f.card_no=nm[1].replace(/^0+(?=\d)/,''); conf.card_no='hi'; }
+      f.card_no=imCardNo(res.no.text);
+      if(f.card_no) conf.card_no='hi';
       else {
         const ft=await foot(); IM.raw.backfoot=ft;
-        const nm2=imFixDigits(ft).match(/\bN[o0]\.?\s*([A-Z]{0,3}-?\d{1,4})\b/i);
-        if(nm2){ f.card_no=nm2[1]; conf.card_no='mid'; }
+        // In the whole-panel fallback there ARE other numbers around, so anchor
+        // on the "No." marker rather than taking the longest run on the card.
+        const nm2=ft.match(/\b[NMW][o0O]?\.?\s*(\d{1,4})\b/i);
+        if(nm2){ f.card_no=nm2[1].replace(/^0+(?=\d)/,''); conf.card_no='mid'; }
       }
 
       IM.raw.serial=res.ser.text;
@@ -3343,7 +3403,10 @@ function imSetLabel(r){
   const b=String(r.brand||'').trim(), st=String(r.set||'').trim();
   if(!b) return st;
   if(!st) return b;
-  return imNorm(st).indexOf(imNorm(b))===0 ? st : (b+' '+st);
+  // Seed rows read brand "Panini" / set "Panini Mosaic"; live Metabase rows read
+  // brand "panini" / set "2023-24 Panini Mosaic". A prefix test only caught the
+  // first, so live data rendered "panini 2023-24 Panini Mosaic".
+  return imNorm(st).indexOf(imNorm(b))>=0 ? st : (b+' '+st);
 }
 
 function imIdRows(){
