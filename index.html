@@ -200,9 +200,21 @@
   .cardimg img{width:100%;height:100%;object-fit:contain;cursor:zoom-in}
   .cardimg{position:relative}
   .imgzoom{position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.25);color:#fff;font-size:14px;width:26px;height:26px;border-radius:7px;display:flex;align-items:center;justify-content:center;pointer-events:none}
-  .imgback{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:200;display:none;align-items:center;justify-content:center;padding:30px;cursor:zoom-out}
+  .imgback{position:fixed;inset:0;background:rgba(0,0,0,.94);z-index:200;display:none;align-items:center;justify-content:center;padding:30px;overflow:hidden}
   .imgback.show{display:flex}
-  .imgback img{max-width:min(92vw,860px);max-height:92vh;border-radius:12px;box-shadow:0 24px 70px rgba(0,0,0,.7)}
+  .imgback img{max-width:min(92vw,860px);max-height:92vh;border-radius:12px;box-shadow:0 24px 70px rgba(0,0,0,.7);
+    transform-origin:center center;will-change:transform;cursor:grab;user-select:none;-webkit-user-drag:none}
+  .imgback img.zoomed{cursor:grab;border-radius:4px}
+  .imgback img.grabbing{cursor:grabbing}
+  .imgzoombar{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;
+    background:rgba(10,15,13,.92);border:1px solid #2b3a32;border-radius:11px;padding:7px 9px;z-index:201}
+  .imgzoombar button{background:transparent;border:none;color:#e7f2ec;font-family:'JetBrains Mono',monospace;font-size:14px;
+    width:32px;height:28px;border-radius:7px;cursor:pointer;line-height:1}
+  .imgzoombar button:hover{background:#18221d;color:var(--green)}
+  .imgzoombar .lvl{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--muted);min-width:46px;text-align:center}
+  .imgzoombar .hint{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#3a4a41;letter-spacing:.06em;
+    padding-left:9px;margin-left:5px;border-left:1px solid #222e28}
+  @media(max-width:600px){.imgzoombar .hint{display:none}}
   .imgx{position:fixed;top:16px;right:22px;background:transparent;border:none;color:#fff;font-size:28px;cursor:pointer;line-height:1}
   .cardimg .noimg{color:#3a4a41;font-size:13px;font-family:'JetBrains Mono',monospace}
   .cardfields{align-self:start}
@@ -611,9 +623,16 @@
   </div>
 </div><!-- /viewMatch -->
 
-<div class="imgback" id="imgBack" onclick="closeImg()">
+<div class="imgback" id="imgBack">
   <img id="imgBig" src="" alt="">
   <button class="imgx" onclick="closeImg()" title="Close (Esc)">✕</button>
+  <div class="imgzoombar" id="imgZoomBar">
+    <button onclick="imzStep(-1)" title="Zoom out (−)">−</button>
+    <span class="lvl" id="imgZoomLvl">100%</span>
+    <button onclick="imzStep(1)" title="Zoom in (+)">+</button>
+    <button onclick="imzReset()" title="Reset (0)">↺</button>
+    <span class="hint">scroll to zoom · drag to pan · dbl-click</span>
+  </div>
 </div>
 
 <div class="mback" id="chBack" onclick="if(event.target===this)closeCh()">
@@ -983,8 +1002,106 @@ function closeCh(){ $('chBack').classList.remove('show'); }
 function rerunLookup(){ const cert=$('certInput')&&$('certInput').value.trim(); const ac=$('acInput')&&$('acInput').value.trim(); if(cert) matchCert(cert); else if(ac) matchAc(ac); }
 function saveCh(){ chKey=(($('chKeyInput')&&$('chKeyInput').value)||'').trim(); try{ if(chKey) localStorage.setItem('ch_key',chKey); else localStorage.removeItem('ch_key'); }catch(e){} const i=$('chKeyInput'); if(i) i.type='password'; const e=$('keyEye'); if(e) e.textContent='Show'; closeCh(); toast(chKey?'Card Hedger key saved':'Key cleared'); rerunLookup(); }
 function clearCh(){ chKey=''; try{ localStorage.removeItem('ch_key'); }catch(e){} if($('chKeyInput')) $('chKeyInput').value=''; toast('Key cleared'); }
-function openImg(src){ if(!src) return; $('imgBig').src=src; $('imgBack').classList.add('show'); }
+/* ---------- lightbox zoom ----------
+   Small type on a card back is the whole point of this panel: when OCR turns
+   "PANINI" into "PANNE" you need to read the original to correct it. So the
+   lightbox pans and zooms rather than just showing the image bigger. */
+const IMZ={scale:1,x:0,y:0,drag:false,sx:0,sy:0,moved:false,pinch:0,pinchScale:1};
+
+function imzApply(){
+  const el=$('imgBig'); if(!el) return;
+  el.style.transform='translate('+IMZ.x+'px,'+IMZ.y+'px) scale('+IMZ.scale+')';
+  el.classList.toggle('zoomed', IMZ.scale>1.01);
+  const lvl=$('imgZoomLvl'); if(lvl) lvl.textContent=Math.round(IMZ.scale*100)+'%';
+}
+function imzReset(){ IMZ.scale=1; IMZ.x=0; IMZ.y=0; imzApply(); }
+
+// Zoom about a point so the pixel under the cursor stays under the cursor.
+function imzTo(next, cx, cy){
+  const el=$('imgBig'); if(!el) return;
+  const old=IMZ.scale;
+  next=Math.max(1, Math.min(12, next));
+  if(Math.abs(next-old)<1e-4) return;
+  if(cx==null){ const r=el.getBoundingClientRect(); cx=r.left+r.width/2; cy=r.top+r.height/2; }
+  const r=el.getBoundingClientRect();
+  const ox=cx-(r.left+r.width/2), oy=cy-(r.top+r.height/2);
+  IMZ.x-=ox*(next/old-1); IMZ.y-=oy*(next/old-1);
+  IMZ.scale=next;
+  if(IMZ.scale<=1.001){ IMZ.scale=1; IMZ.x=0; IMZ.y=0; }
+  imzApply();
+}
+function imzStep(dir){ imzTo(IMZ.scale*(dir>0?1.35:1/1.35), null, null); }
+
+function openImg(src){
+  if(!src) return;
+  $('imgBig').src=src;
+  $('imgBack').classList.add('show');
+  imzReset();
+}
 function closeImg(){ $('imgBack').classList.remove('show'); }
+
+function imzWire(){
+  const back=$('imgBack'), img=$('imgBig');
+  if(!back||!img) return;
+
+  back.addEventListener('wheel',e=>{
+    e.preventDefault();
+    imzTo(IMZ.scale*(e.deltaY>0?1/1.16:1.16), e.clientX, e.clientY);
+  },{passive:false});
+
+  img.addEventListener('mousedown',e=>{
+    e.preventDefault();
+    IMZ.drag=true; IMZ.moved=false;
+    IMZ.sx=e.clientX-IMZ.x; IMZ.sy=e.clientY-IMZ.y;
+    img.classList.add('grabbing');
+  });
+  window.addEventListener('mousemove',e=>{
+    if(!IMZ.drag) return;
+    IMZ.x=e.clientX-IMZ.sx; IMZ.y=e.clientY-IMZ.sy; IMZ.moved=true; imzApply();
+  });
+  window.addEventListener('mouseup',()=>{ IMZ.drag=false; img.classList.remove('grabbing'); });
+
+  img.addEventListener('dblclick',e=>{
+    e.stopPropagation();
+    if(IMZ.scale>1.01) imzReset(); else imzTo(3, e.clientX, e.clientY);
+  });
+
+  // Backdrop closes \u2014 but never as the tail end of a drag that happened to
+  // finish over empty space.
+  back.addEventListener('click',e=>{
+    const wasDrag=IMZ.moved; IMZ.moved=false;
+    if(e.target===back && !wasDrag) closeImg();
+  });
+
+  // Pinch, for scanning a label on a phone.
+  const dist=t=>Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY);
+  back.addEventListener('touchstart',e=>{
+    if(e.touches.length===2){ IMZ.pinch=dist(e.touches); IMZ.pinchScale=IMZ.scale; }
+    else if(e.touches.length===1){ IMZ.drag=true; IMZ.moved=false;
+      IMZ.sx=e.touches[0].clientX-IMZ.x; IMZ.sy=e.touches[0].clientY-IMZ.y; }
+  },{passive:true});
+  back.addEventListener('touchmove',e=>{
+    if(e.touches.length===2 && IMZ.pinch){
+      e.preventDefault();
+      const t=e.touches;
+      imzTo(IMZ.pinchScale*(dist(t)/IMZ.pinch),
+            (t[0].clientX+t[1].clientX)/2, (t[0].clientY+t[1].clientY)/2);
+    } else if(e.touches.length===1 && IMZ.drag && IMZ.scale>1.01){
+      e.preventDefault();
+      IMZ.x=e.touches[0].clientX-IMZ.sx; IMZ.y=e.touches[0].clientY-IMZ.sy;
+      IMZ.moved=true; imzApply();
+    }
+  },{passive:false});
+  back.addEventListener('touchend',()=>{ IMZ.pinch=0; IMZ.drag=false; });
+
+  window.addEventListener('keydown',e=>{
+    if(!$('imgBack').classList.contains('show')) return;
+    if(e.key==='Escape') closeImg();
+    else if(e.key==='+'||e.key==='=') { e.preventDefault(); imzStep(1); }
+    else if(e.key==='-'||e.key==='_') { e.preventDefault(); imzStep(-1); }
+    else if(e.key==='0') { e.preventDefault(); imzReset(); }
+  });
+}
 function switchView(name){
   const views={ match:'viewMatch', sets:'viewSets', image:'viewImage' };
   const tabs={ match:'tabMatch', sets:'tabSets', image:'tabImage' };
@@ -2447,6 +2564,7 @@ document.addEventListener('keydown',e=>{
 buildYearList();
 wireOcr();
 imWire();
+imzWire();
 renderAll();
 try{ paintBuildStamp(); }catch(e){}
 switchView('match');
