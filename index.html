@@ -402,6 +402,9 @@
   .frow.imf input:focus{outline:none;border-color:var(--green-dim);background:var(--bg-2)}
   .frow.imf input::placeholder{color:#3a4a41;font-weight:500}
   .frow.imf.vaulted{background:rgba(62,232,127,.03)}
+  .applyhint{display:block;font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.07em;
+    color:#3a4a41;margin-top:5px;text-transform:uppercase}
+  .frow.imf:hover .applyhint{color:var(--green)}
   .impanel{border:1px solid var(--border);border-radius:var(--radius);background:var(--panel);overflow:hidden}
   .imhead{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
   .imhead h2{font-size:18px;font-weight:800;letter-spacing:-.01em}
@@ -2782,28 +2785,84 @@ function imPrep(src, opts){
   // Upscaling helps Tesseract until the bitmap gets big enough that recognition
   // cost dominates. Cap on area, not width — a full-width back panel and a single
   // serial line need very different scale factors to land in the same budget.
-  const MAXPX = 1.5e6;
+  const MAXPX = opts.maxPx || 1.5e6;
   const byWidth = (opts.targetW || 1250) / src.width;
   const byArea  = Math.sqrt(MAXPX / (src.width*src.height));
-  const scale = Math.max(1, Math.min(5, byWidth, byArea));
+  const scale = Math.max(1, Math.min(opts.scaleMax || 5, byWidth, byArea));
   const c=imCanvas(src.width*scale, src.height*scale);
   const ctx=c.getContext('2d');
   ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
   ctx.drawImage(src,0,0,c.width,c.height);
 
   const id=ctx.getImageData(0,0,c.width,c.height), d=id.data;
-  const hist=new Array(256).fill(0);
-  for(let i=0;i<d.length;i+=4){
+  const W=c.width, H=c.height, N=W*H;
+
+  const gray=new Uint8ClampedArray(N);
+  for(let i=0,p=0;i<d.length;i+=4,p++){
     let g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
     if(opts.invert) g=255-g;
-    g=g|0; d[i]=d[i+1]=d[i+2]=g; hist[g]++;
+    gray[p]=g;
   }
+
+  // Upscaling alone just makes blurry text bigger and blurrier. Unsharp masking
+  // puts the edges back: subtract a blurred copy to recover the stroke
+  // boundaries the scan lost, which is what Tesseract actually keys on.
+  if(opts.sharpen!==false){
+    const r=Math.max(1, Math.round(Math.min(W,H)/90));
+    const blur=imBoxBlur(gray,W,H,r);
+    const amt=opts.sharpenAmount||1.15;
+    for(let p=0;p<N;p++) gray[p]=gray[p]+amt*(gray[p]-blur[p]);
+  }
+
+  // Then stretch what's left to the full range, clipping the tails so a single
+  // specular highlight can't flatten everything else.
+  const h2=new Uint32Array(256);
+  for(let p=0;p<N;p++) h2[gray[p]]++;
+  let lo=0,hi=255,acc=0;
+  const clip=N*0.02;
+  for(let v=0;v<256;v++){ acc+=h2[v]; if(acc>clip){ lo=v; break; } }
+  acc=0;
+  for(let v=255;v>=0;v--){ acc+=h2[v]; if(acc>clip){ hi=v; break; } }
+  if(hi-lo>12){
+    const k=255/(hi-lo);
+    for(let p=0;p<N;p++) gray[p]=(gray[p]-lo)*k;
+  }
+
+  const hist=new Array(256).fill(0);
+  for(let p=0;p<N;p++) hist[gray[p]]++;
   if(opts.binarize!==false){
-    const t=imOtsu(hist, d.length/4);
-    for(let i=0;i<d.length;i+=4){ const v=d[i]>t?255:0; d[i]=d[i+1]=d[i+2]=v; }
+    const t=imOtsu(hist,N);
+    for(let p=0;p<N;p++) gray[p]=gray[p]>t?255:0;
   }
+  for(let i=0,p=0;i<d.length;i+=4,p++){ d[i]=d[i+1]=d[i+2]=gray[p]; }
   ctx.putImageData(id,0,0);
   return c;
+}
+
+// Separable box blur with running sums \u2014 O(N) regardless of radius, so the
+// sharpen pass costs almost nothing even on a 3000px strip.
+function imBoxBlur(src,W,H,r){
+  const tmp=new Uint8ClampedArray(W*H), out=new Uint8ClampedArray(W*H);
+  const win=r*2+1;
+  for(let y=0;y<H;y++){
+    let sum=0; const row=y*W;
+    for(let x=-r;x<=r;x++) sum+=src[row+Math.min(W-1,Math.max(0,x))];
+    for(let x=0;x<W;x++){
+      tmp[row+x]=sum/win;
+      sum-=src[row+Math.min(W-1,Math.max(0,x-r))];
+      sum+=src[row+Math.min(W-1,Math.max(0,x+r+1))];
+    }
+  }
+  for(let x=0;x<W;x++){
+    let sum=0;
+    for(let y=-r;y<=r;y++) sum+=tmp[Math.min(H-1,Math.max(0,y))*W+x];
+    for(let y=0;y<H;y++){
+      out[y*W+x]=sum/win;
+      sum-=tmp[Math.min(H-1,Math.max(0,y-r))*W+x];
+      sum+=tmp[Math.min(H-1,Math.max(0,y+r+1))*W+x];
+    }
+  }
+  return out;
 }
 
 function imOtsu(hist,total){
@@ -2893,7 +2952,7 @@ function imMeanLum(cv){
   return n?t/n:128;
 }
 
-async function imReadSmart(region, psm, whitelist, test, label, gray){
+async function imReadSmart(region, psm, whitelist, test, label, opt){
   // Test mode intercepts here and nowhere else. Everything upstream (which
   // regions get cut, in what order, on how many workers) and everything
   // downstream (parsing, fallbacks, scoring) is the real thing.
@@ -2912,12 +2971,22 @@ async function imReadSmart(region, psm, whitelist, test, label, gray){
   // swallowed \u2014 which is exactly what happened to the serial and the card
   // number. So those regions get a grayscale pass too: Tesseract reads
   // grayscale fine, and skipping the threshold keeps thin foil strokes alive.
-  const tries=[{invert:order[0],binarize:true},{invert:order[1],binarize:true}];
-  if(gray) tries.push({invert:order[0],binarize:false},{invert:order[1],binarize:false});
+  opt=opt||{};
+  // A whole panel is mostly artwork with text scattered through it. Otsu picks a
+  // single threshold for the entire thing, so the photo decides it and the small
+  // print gets crushed \u2014 grayscale first is far better here, and the page is
+  // worth more pixels than a one-line crop.
+  const tries = opt.whole
+    ? [{invert:false,binarize:false,maxPx:3.2e6},
+       {invert:true, binarize:false,maxPx:3.2e6},
+       {invert:order[0],binarize:true,maxPx:3.2e6}]
+    : [{invert:order[0],binarize:true},{invert:order[1],binarize:true}];
+  if(opt.gray) tries.push({invert:order[0],binarize:false},{invert:order[1],binarize:false});
 
   let best={text:'',conf:0};
   for(const t of tries){
-    const prepped=imPrep(region,{invert:t.invert, binarize:t.binarize});
+    const prepped=imPrep(region,{invert:t.invert, binarize:t.binarize,
+      maxPx:t.maxPx||opt.maxPx, targetW:opt.targetW, scaleMax:opt.scaleMax});
     if(label) IM.crops.push({
       label: label+(t.invert?' \u25aa inv':'')+(t.binarize?'':' \u25aa gray'),
       canvas: prepped
@@ -3217,13 +3286,13 @@ async function imRun(){
     const res={};
 
     if(IM.stub){
-      backAll  = IM.back  ? (await imReadSmart(IM.back, '6','',null,'back \u2014 whole')).text  : '';
-      frontAll = IM.front ? (await imReadSmart(IM.front,'6','',null,'front \u2014 whole')).text : '';
+      backAll  = IM.back  ? (await imReadSmart(IM.back, '6','',null,'back \u2014 whole',{whole:true})).text  : '';
+      frontAll = IM.front ? (await imReadSmart(IM.front,'6','',null,'front \u2014 whole',{whole:true})).text : '';
     } else if(IM.front && IM.back){
       imProg('Identifying front and back\u2026',12);
       const [a,b]=await Promise.all([
-        imReadSmart(IM.front,'6','',null,'panel A \u2014 whole'),
-        imReadSmart(IM.back, '6','',null,'panel B \u2014 whole')
+        imReadSmart(IM.front,'6','',null,'panel A \u2014 whole',{whole:true}),
+        imReadSmart(IM.back, '6','',null,'panel B \u2014 whole',{whole:true})
       ]);
       if(imBackness(a.text) > imBackness(b.text)){
         const t=IM.front; IM.front=IM.back; IM.back=t;      // they were the other way round
@@ -3235,7 +3304,7 @@ async function imRun(){
     } else if(IM.back){
       backAll=(await imReadSmart(IM.back,'6','',null,'back \u2014 whole')).text;
     } else if(IM.front){
-      frontAll=(await imReadSmart(IM.front,'6','',null,'front \u2014 whole')).text;
+      frontAll=(await imReadSmart(IM.front,'6','',null,'front \u2014 whole',{whole:true})).text;
     }
     IM.raw.backwhole=backAll; IM.raw.frontwhole=frontAll;
 
@@ -3245,19 +3314,27 @@ async function imRun(){
     const jobs=[];
     if(IM.back){
       const B=IM.back;
-      jobs.push(['set', imReadSmart(imFromRegion(B,.10,.855,.82,.065),'6','',
-                  t=>/(19|20)\d{2}/.test(t)&&/[A-Za-z]{4}/.test(t),'set line')]);
+      jobs.push(['set', imReadSmart(imFromRegion(B,.06,.845,.88,.090),'6','',
+                  t=>/(19|20)\d{2}/.test(t)&&/[A-Za-z]{4}/.test(t),'set line',
+                  {targetW:3000, maxPx:3.5e6, scaleMax:8, gray:true})]);
       jobs.push(['no',  imReadSmart(imFromRegion(B,.38,.022,.28,.070),'7','',
-                  t=>/\d{2,4}/.test(imFixDigits(t)),'card no.', true)]);
+                  t=>/\d{2,4}/.test(imFixDigits(t)),'card no.',{gray:true})]);
       jobs.push(['ser', imReadSmart(imFromRegion(B,.62,.010,.36,.084),'7','0123456789/',
-                  t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial', true)]);
+                  t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial',{gray:true})]);
       jobs.push(['np',  imReadSmart(imFromRegion(B,.20,.438,.70,.084),'6','',null,'nameplate')]);
     }
     if(IM.front){
       const F=IM.front;
       jobs.push(['ban', imReadSmart(imFromRegion(F,.06,.76,.88,.20),'6','',null,'front banner')]);
-      jobs.push(['rc',  imReadSmart(imFromRegion(F,.62,.02,.36,.16),'11','',
-                  t=>/ROOK|RC/i.test(t),'rc shield')]);
+      // The rookie shield is a small logo carrying ~8px lettering. The old crop
+      // DID contain it — the problem was zoom: targetW 1250 across a 627px-wide
+      // strip caps the scale at 2x, so "ROOKIE" arrived at 16px and Tesseract
+      // never had a chance. Read the whole top strip instead, at 5x, and let
+      // sparse-text mode find the words wherever the shield happens to sit —
+      // left corner on some products, right on others.
+      jobs.push(['rc',  imReadSmart(imFromRegion(F,0,.012,1,.265),'11','',
+                  t=>/ROOK|CARD|\bRC\b/i.test(t),'rookie shield',
+                  {targetW:3600, maxPx:4e6, scaleMax:8, gray:true})]);
     }
 
     let done=0;
@@ -3292,14 +3369,27 @@ async function imRun(){
       f.parallel_marker = /\bPRIZM\b/i.test(res.set.text+' '+backAll);
 
       IM.raw.cardno=res.no.text;
-      f.card_no=imCardNo(res.no.text);
-      if(f.card_no) conf.card_no='hi';
-      else {
-        // In the whole panel there ARE other numbers, so anchor on the "No."
-        // marker instead of taking the longest run anywhere on the card.
-        const nm2=backAll.match(/\b[NMW][o0O]?\s*[\.\u00b0]?\s*(\d{1,4})\b/i);
-        if(nm2){ f.card_no=nm2[1].replace(/^0+(?=\d)/,''); conf.card_no='mid'; }
-      }
+      // The crop used to be trusted whenever it returned anything at all, so a
+      // single stray "0" off the chevron pattern counted as the card number and
+      // the whole-panel fallback never ran — with "No. 262" sitting right there
+      // in the back text. A one-character answer is not an answer.
+      const anchored = t => {
+        const m=String(t||'').match(/\b[NMW][o0O]?\s*[\.\u00b0]?\s*(\d{1,4})\b/i);
+        return m ? m[1].replace(/^0+(?=\d)/,'') : '';
+      };
+      // Two digits was still too weak a test: a crop reading "52" out of noise
+      // passed it and blocked the fallback while "No. 262" sat in the back text.
+      // Prefer an answer that arrived WITH the "No." marker, and prefer one the
+      // crop and the whole panel agree on.
+      const cropNo   = imCardNo(res.no.text);
+      const cropAnch = anchored(res.no.text);
+      const backAnch = anchored(backAll);
+      if(cropAnch && backAnch && cropAnch===backAnch){ f.card_no=cropAnch; conf.card_no='hi'; }
+      else if(cropAnch && !backAnch){ f.card_no=cropAnch; conf.card_no='hi'; }
+      else if(backAnch && cropNo===backAnch){ f.card_no=backAnch; conf.card_no='hi'; }
+      else if(backAnch){ f.card_no=backAnch; conf.card_no='mid'; }
+      else if(cropAnch){ f.card_no=cropAnch; conf.card_no='mid'; }
+      else if(cropNo.length>=2){ f.card_no=cropNo; conf.card_no='lo'; }
 
       IM.raw.serial=res.ser.text;
       let sm=imFixDigits(res.ser.text).match(/(\d{1,5})\s*\/\s*(\d{1,5})/);
@@ -3326,8 +3416,12 @@ async function imRun(){
         f.player=np.player; f.team=np.team||f.team;
         conf.player='lo';
       }
-      f.rookie=/ROOK|\bRC\b/i.test((res.rc?res.rc.text:'')+' '+res.ban.text+' '+frontAll);
-      conf.rookie=f.rookie?'mid':'none';
+      const rcText=(res.rc?res.rc.text:'')+' '+res.ban.text+' '+frontAll;
+      // "ROOKIE" or "CARD" spelled out is solid; a bare "RC" is two characters
+      // and turns up in noise, so it only earns MED.
+      if(/ROOKIE|ROOKIE\s*CARD/i.test(rcText)){ f.rookie=true; conf.rookie='hi'; }
+      else if(/\bROOK|\bRC\b/i.test(rcText)){ f.rookie=true; conf.rookie='mid'; }
+      else { f.rookie=false; conf.rookie='none'; }
       f.colour = IM.stub ? (IM.stubColour||null) : imBorderColour(IM.front);
       conf.colour=f.colour?'hi':'none';
     }
@@ -3399,7 +3493,7 @@ const IM_FIXTURES = {
     'serial':       '115/199',
     'nameplate':    'AUSAR THOMPSON\nDETROIT PISTONS',
     'front banner': 'NBA DEBUT\nAUSAR THOMPSON\nDETROIT PISTONS',
-    'rc shield':    'ROOKIE RC CARD',
+    'rookie shield': 'ROOKIE RC CARD',
     'back \u2014 whole':  'No. 262    115/199\nAUSAR THOMPSON\nDETROIT PISTONS\n'+
                       'Thompson couldn\u2019t wait to make Detroit history.\n'+
                       'joining Zeljko Rebraca (2001-02) and Terry Tyler (1978-79).\n'+
@@ -3540,6 +3634,41 @@ function imSetLabel(r){
   return imNorm(st).indexOf(imNorm(b))>=0 ? st : (b+' '+st);
 }
 
+// The registry match is the clean version of what OCR mangled: it says
+// "2023-24 Panini Mosaic" while the Set field still reads "WDSAIC BASKETHA".
+// Clicking it writes Year, Brand and Set from the matched row, so correcting a
+// bad read is one click instead of three fields of typing.
+function imSetNameRow(setName, sel){
+  const can=!!sel;
+  return '<div class="frow imf'+(can?' copyable':'')+'"'+
+    (can?' onclick="imApplySet()" title="Fill Year, Brand and Set from this registry match"':'')+'>'+
+    '<span class="fk">Set Name</span>'+
+    '<span class="fv">'+(setName?esc(setName):'\u2014')+
+      (can?'<span class="applyhint">click to apply \u2192 year / brand / set</span>':'')+'</span>'+
+    imConfPill('set_name', setName?(sel?'hi':'mid'):'none')+'</div>';
+}
+
+function imApplySet(){
+  if(IM.chosen<0) return;
+  const r=IM.cands[IM.chosen];
+  const full=imSetLabel(r);
+
+  const y=imYear(full);
+  let rest=full;
+  if(y){ IM.fields.year=y.year; rest=rest.replace(y.raw,'').trim(); }
+
+  IM.fields.brand=r.brand||'';
+  const bn=imNorm(r.brand||'');
+  const toks=rest.split(/\s+/).filter(Boolean);
+  if(bn && toks.length>1 && imNorm(toks[0])===bn) rest=toks.slice(1).join(' ');
+  IM.fields.set=rest||full;
+
+  if(y) IM.conf.year='hi';
+  IM.conf.brand='hi'; IM.conf.set='hi';
+  imRender();
+  toast('Filled from registry');
+}
+
 function imIdRows(){
   const f=IM.fields, v=IM.vault||{};
   const sel = IM.chosen>=0 ? IM.cands[IM.chosen] : null;
@@ -3553,7 +3682,7 @@ function imIdRows(){
 
   return imField('sport','Category',f.sport,true) +
     imField('insert','Subset / Insert',f.insert||v.subset||v.insert,true) +
-    imField('set_name','Set Name',setName,false,false, setName?(sel?'hi':'mid'):'none') +
+    imSetNameRow(setName, sel) +
     imField('set_id','Set ID',setId,false,'mono', setIdLvl, setId?'vaulted':'') +
     imField('insert_id','Insert ID',v.insert_id,false,'mono', v.insert_id?'vault':'none', v.insert_id?'vaulted':'') +
     imField('subset_id','Subset ID',v.subset_id,false,'mono', v.subset_id?'vault':'none', v.subset_id?'vaulted':'') +
