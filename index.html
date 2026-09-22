@@ -393,10 +393,10 @@
   .frow.imf{grid-template-columns:215px minmax(0,1fr) 120px;gap:18px;align-items:center;padding:14px 16px}
   .frow.imf .fk{font-size:17px;letter-spacing:.09em;padding-top:0}
   .frow.imf .fv{font-size:26px;line-height:1.25}
-  .frow.imf.copyable{cursor:pointer}
-  .frow.imf.copyable:hover{background:rgba(62,232,127,.06)}
-  .fk.copyk{cursor:pointer}
-  .fk.copyk:hover{color:#8ff5b8}
+  .fk.copyk{cursor:pointer;transition:color .12s}
+  .fk.copyk:hover{color:#8ff5b8;text-shadow:0 0 14px rgba(62,232,127,.45)}
+  .fv.applyable{cursor:pointer}
+  .fv.applyable:hover{color:var(--green)}
   .frow.imf input{width:100%;background:transparent;border:1px solid transparent;color:#fff;font-size:26px;font-weight:600;font-family:inherit;border-radius:7px;padding:2px 8px;margin-left:-8px;line-height:1.25}
   .frow.imf input:hover{border-color:var(--border-2);background:var(--bg-2)}
   .frow.imf input:focus{outline:none;border-color:var(--green-dim);background:var(--bg-2)}
@@ -416,6 +416,7 @@
   .conf.mid{background:rgba(232,181,62,.14);color:#f0c657}
   .conf.lo{background:rgba(232,87,62,.15);color:#ff8f78}
   .conf.vault{background:rgba(62,232,127,.10);color:#7fe3a8}
+  .conf.learn{background:rgba(96,165,250,.14);color:#8ab8ff}
   .conf.none{background:#141c18;color:var(--muted-2)}
 
   .imsec{padding:16px 20px;border-top:1px solid var(--border)}
@@ -2568,6 +2569,7 @@ buildYearList();
 wireOcr();
 imWire();
 imzWire();
+imlLoad();
 renderAll();
 try{ paintBuildStamp(); }catch(e){}
 switchView('match');
@@ -2615,7 +2617,7 @@ function imProg(msg, pct){
 function imReset(){
   IM.file=null; IM.img=null; IM.front=null; IM.back=null; IM.label=null; IM.shots=[]; IM.mode='';
   IM.fields={}; IM.raw={}; IM.crops=[]; IM.cands=[]; IM.chosen=-1; IM.sample=false;
-  IM.stub=null; IM.stubColour=null; IM.vault=null; IM.vaultState=''; IM.vaultError='';
+  IM.stub=null; IM.stubColour=null; IM.poke=false; IM.vault=null; IM.vaultState=''; IM.vaultError=''; IM.vaultPinned=false;
   const pv=$('imPreview'); if(pv){ pv.hidden=true; pv.innerHTML=''; }
   $('imGo').disabled=true;
   $('imEmpty').hidden=false; $('imResult').hidden=true; $('imResult').innerHTML='';
@@ -3132,6 +3134,17 @@ function imParseSetLine(text){
 // A letter prefix is only meaningful when it's hyphenated (BDC-25, RC-10). Bare
 // leading letters on a card back are the "No." glyphs, so take the longest digit
 // run instead and let the noise fall away.
+// a <= b isn't much of a test: foil digits over a chevron pattern produced
+// "/7144" and it passed. Print runs aren't arbitrary numbers \u2014 publishers pick
+// round or 99-style figures, and serial-numbered parallels don't run past a few
+// thousand. Anything above 5000, or four digits that isn't round, is OCR noise.
+function imPlausibleRun(a,b){
+  if(!(b>0 && a>0 && a<=b)) return false;
+  if(b>5000) return false;
+  if(b>=1000 && !(b%50===0 || /99$/.test(String(b)))) return false;
+  return true;
+}
+
 function imCardNo(text){
   const raw=String(text||'');
   const hy=raw.match(/\b([A-Z]{1,4}\s*-\s*\d{1,4})\b/i);
@@ -3171,7 +3184,11 @@ function imParseBanner(text, player){
     if(!words.length) continue;
     if(words.every(w=>IM_STOP.test(w))) continue;
     if(words.length>6) continue;
-    return l.replace(/\b([A-Z])([A-Z]+)\b/g,(m,a,b)=>a+b.toLowerCase());
+    // OCR sometimes loses the space ("NBADEBUT"), so split known league
+    // prefixes back out before title-casing.
+    let out=l.replace(/\b(NBA|NFL|MLB|NHL|MLS|WNBA|UFC)([A-Z]{3,})\b/g,(m,a,b)=>a+' '+b);
+    return out.replace(/\b([A-Z])([A-Z]+)\b/g,(m,a,b)=>a+b.toLowerCase())
+              .replace(/\b(Nba|Nfl|Mlb|Nhl|Mls|Wnba|Ufc)\b/g,x=>x.toUpperCase());
   }
   return '';
 }
@@ -3224,6 +3241,119 @@ function imParseLabel(text){
   return out;
 }
 
+// ---------- learned corrections ----------
+// OCR fails the same way on the same card every time: this product's copyright
+// strip always reads "WDSAIC BASKETHA", that serial panel always invents digits.
+// Correcting it by hand and then throwing the correction away is the waste. So
+// remember the mapping from the RAW region text to what the user typed, keyed on
+// the raw string, and apply it next time the same garbage comes back.
+//
+// Keyed on raw OCR rather than on the card, deliberately: the same misread recurs
+// across every copy of a product, so one correction fixes the whole run.
+const IML = { fields:{}, sets:{} };
+const IML_KEY = 'arenaImageMatchLearn.v1';
+
+function imlLoad(){
+  try{
+    const j=localStorage.getItem(IML_KEY);
+    if(j){ const o=JSON.parse(j); IML.fields=o.fields||{}; IML.sets=o.sets||{}; }
+  }catch(e){ /* storage unavailable \u2014 learning just stays off */ }
+}
+function imlSave(){
+  try{ localStorage.setItem(IML_KEY, JSON.stringify({fields:IML.fields, sets:IML.sets})); }
+  catch(e){}
+}
+function imlKey(field, raw){ return field+'|'+imNorm(raw).slice(0,90); }
+function imlRecall(field, raw){
+  if(!raw) return null;
+  const v=IML.fields[imlKey(field,raw)];
+  return (v==null||v==='') ? null : v;
+}
+function imlTeach(field, raw, val){
+  if(!raw || val==null || val==='') return;
+  // Don't store an "correction" that just repeats what OCR already said.
+  if(imNorm(val)===imNorm(raw)) return;
+  IML.fields[imlKey(field,raw)]=val;
+  imlSave();
+}
+function imlCount(){ return Object.keys(IML.fields).length + Object.keys(IML.sets).length; }
+function imlForget(){
+  IML.fields={}; IML.sets={}; imlSave();
+  toast('Learned corrections cleared');
+  if(IM.fields && Object.keys(IM.fields).length) imRender();
+}
+
+// Which raw region each field came out of \u2014 the correction has to be keyed on the
+// text that produced the mistake, not on the field name alone.
+function imlSources(res, frontAll){
+  const t=k=>(res[k]&&res[k].text)||'';
+  return IM.poke
+    ? { player:t('pkname'), card_no:t('pkfoot'), year:t('pkfoot'),
+        set_code:t('pkfoot'), set:t('pkfoot'), brand:t('pkfoot') }
+    : { year:t('set'), brand:t('set'), set:t('set'), sport:t('set'),
+        player:t('np'), team:t('np'), card_no:t('no'),
+        parallel_total:t('ser'), insert:t('ban') };
+}
+
+// A set the user picked by hand for this signature is the answer next time.
+function imlSetSig(f, src){
+  return imNorm(f.set_code) || imNorm(src && src.set) || '';
+}
+
+// ---------- Pokemon ----------
+// A Pokemon card breaks every assumption the sports path makes. The back is a
+// generic Pokeball with no information on it at all, so everything has to come
+// off the FRONT, and imBackness would happily pick the front as the back
+// because it's the side with all the text.
+//
+// The footer strip carries the three things that matter, in one line:
+//   PAF EN   099/091   (c)2024 Pokemon / Nintendo / Creatures / GAME FREAK
+// The set code is the real prize \u2014 it's an exact key into the registry's `code`
+// column, which beats fuzzy-matching a set name by a mile.
+const POKE_RX=/game\s*freak|nintendo\s*[\/,]\s*creatures|pok[e\u00e9]mon/i;
+
+function imPokeFrontScore(t){
+  const s=String(t||''); let sc=0;
+  if(/game\s*freak/i.test(s)) sc+=4;
+  if(/illus\.?/i.test(s)) sc+=3;
+  if(/\d{1,3}\s*\/\s*\d{1,3}/.test(s)) sc+=3;
+  if(/creatures/i.test(s)) sc+=2;
+  if(/\bHP\b/.test(s)) sc+=2;
+  if(/\bBASIC\b|\bSTAGE\b|weakness|resistance|retreat/i.test(s)) sc+=2;
+  return sc;
+}
+
+const POKE_LANG=/\b(EN|FR|DE|IT|ES|PT|JP|KO|ZH)\b/;
+
+function imParsePoke(footer, nameTxt, whole){
+  const out={ set_code:'', lang:'', card_no:'', set_total:'', year:'', player:'' };
+  const all=[footer, whole].filter(Boolean).join('\n');
+
+  // "099/091" \u2014 card number over SET SIZE. This is not a print run: 091 is how
+  // many cards are in the set, so it must never reach parallel_total.
+  // Keep the zero padding: the vault stores this card as "099", not "99", so
+  // stripping it would break the lookup.
+  const num=imFixDigits(all).match(/\b(\d{1,3})\s*\/\s*(\d{1,3})\b/);
+  if(num){ out.card_no=num[1]; out.set_total=num[2].replace(/^0+(?=\d)/,''); }
+
+  // Set code sits immediately left of the number, with the language beside it.
+  let code=all.match(/\b([A-Z]{2,5})\s*(EN|FR|DE|IT|ES|PT|JP|KO|ZH)\b/);
+  if(code){ out.set_code=code[1].toUpperCase(); out.lang=code[2].toUpperCase(); }
+  else {
+    const l=String(footer||'').split(/\n+/).find(x=>POKE_LANG.test(x));
+    if(l){ const m=l.match(/\b([A-Z]{2,5})\b/); if(m) out.set_code=m[1].toUpperCase(); }
+  }
+
+  const yr=all.match(/(?:\u00a9|\(c\))\s*((?:19|20)\d{2})/i) || all.match(/\b(20[0-3]\d)\b/);
+  if(yr) out.year=yr[1];
+
+  const nm=String(nameTxt||'').split(/\n+/)
+    .map(x=>x.replace(/\bBASIC\b|\bSTAGE\s*\d?\b|\bHP\b|\d+/gi,'').replace(/[^A-Za-z'\.\- ]/g,' ').replace(/\s+/g,' ').trim())
+    .filter(x=>x.length>2)[0]||'';
+  out.player=nm;
+  return out;
+}
+
 /* ---------- registry matching ---------- */
 
 function imMatchSets(f){
@@ -3232,6 +3362,17 @@ function imMatchSets(f){
   if(sportPick && data[sportPick]) sports=[sportPick];
   else sports=Object.keys(data);
   sports.forEach(sp=>(data[sp]||[]).forEach(r=>pool.push(Object.assign({__sport:sp},r))));
+
+  // A set code is an exact key into the registry's `code` column, so when one
+  // has been read it decides the match outright — no fuzzy name scoring needed.
+  // This is what makes the Pokemon path work: "PAF" identifies the set even
+  // though the card face never spells its name out.
+  const codeN=imNorm(f.set_code);
+  if(codeN){
+    const exact=pool.filter(r=>imNorm(r.code)===codeN)
+                    .map(r=>Object.assign({__score:1,__byCode:true},r));
+    if(exact.length) return exact.slice(0,6);
+  }
 
   const q=imTokens([f.brand,f.set].filter(Boolean).join(' '));
   if(!q.length) return [];
@@ -3266,7 +3407,7 @@ function imMatchSets(f){
 async function imRun(){
   if(IM.busy) return;
   if(!IM.front && !IM.back && !IM.label){ toast('Drop a card image first'); return; }
-  IM.busy=true; IM.crops=[]; IM.chosen=-1;
+  IM.busy=true; IM.crops=[]; IM.chosen=-1; IM.poke=false;
   IM.sample = IM.stub ? (IM.mode==='label'?'Label':'Card') : false;
   $('imGo').disabled=true;
   const t0=performance.now();
@@ -3286,25 +3427,36 @@ async function imRun(){
     const res={};
 
     if(IM.stub){
-      backAll  = IM.back  ? (await imReadSmart(IM.back, '6','',null,'back \u2014 whole',{whole:true})).text  : '';
-      frontAll = IM.front ? (await imReadSmart(IM.front,'6','',null,'front \u2014 whole',{whole:true})).text : '';
+      backAll  = IM.back  ? (await imReadSmart(IM.back, '11','',null,'back \u2014 whole',{whole:true})).text  : '';
+      frontAll = IM.front ? (await imReadSmart(IM.front,'11','',null,'front \u2014 whole',{whole:true})).text : '';
     } else if(IM.front && IM.back){
       imProg('Identifying front and back\u2026',12);
       const [a,b]=await Promise.all([
-        imReadSmart(IM.front,'6','',null,'panel A \u2014 whole',{whole:true}),
-        imReadSmart(IM.back, '6','',null,'panel B \u2014 whole',{whole:true})
+        imReadSmart(IM.front,'11','',null,'panel A \u2014 whole',{whole:true}),
+        imReadSmart(IM.back, '11','',null,'panel B \u2014 whole',{whole:true})
       ]);
-      if(imBackness(a.text) > imBackness(b.text)){
-        const t=IM.front; IM.front=IM.back; IM.back=t;      // they were the other way round
+      IM.poke = POKE_RX.test(a.text) || POKE_RX.test(b.text);
+      let swap;
+      if(IM.poke){
+        // Backness can't be used here: the Pokeball back carries nothing, so the
+        // front — the side with all the text — would be mistaken for the back.
+        // Pick the side that actually looks like a Pokemon card face.
+        swap = imPokeFrontScore(b.text) > imPokeFrontScore(a.text);
+      } else {
+        swap = imBackness(a.text) > imBackness(b.text);
+      }
+      if(swap){
+        const t=IM.front; IM.front=IM.back; IM.back=t;
         backAll=a.text; frontAll=b.text;
         IM.shots=[['Front',IM.front],['Back',IM.back]];
       } else {
         backAll=b.text; frontAll=a.text;
       }
+      if(IM.poke){ const t=backAll; backAll=frontAll; frontAll=t; }
     } else if(IM.back){
       backAll=(await imReadSmart(IM.back,'6','',null,'back \u2014 whole')).text;
     } else if(IM.front){
-      frontAll=(await imReadSmart(IM.front,'6','',null,'front \u2014 whole',{whole:true})).text;
+      frontAll=(await imReadSmart(IM.front,'11','',null,'front \u2014 whole',{whole:true})).text;
     }
     IM.raw.backwhole=backAll; IM.raw.frontwhole=frontAll;
 
@@ -3312,7 +3464,14 @@ async function imRun(){
     // refine what the whole-panel read already gives; where a crop fails, the
     // full text below still carries the field.
     const jobs=[];
-    if(IM.back){
+    if(IM.poke && IM.front){
+      const F=IM.front;
+      jobs.push(['pkname', imReadSmart(imFromRegion(F,.05,.045,.60,.075),'7','',
+                  t=>/[A-Za-z]{3}/.test(t),'pokemon name',{targetW:2400,maxPx:3e6,scaleMax:8})]);
+      jobs.push(['pkfoot', imReadSmart(imFromRegion(F,.02,.880,.96,.105),'6','',
+                  t=>/\d{1,3}\s*\/\s*\d{1,3}/.test(imFixDigits(t)),'pokemon footer',
+                  {targetW:3200,maxPx:4e6,scaleMax:8,gray:true})]);
+    } else if(IM.back){
       const B=IM.back;
       jobs.push(['set', imReadSmart(imFromRegion(B,.06,.845,.88,.090),'6','',
                   t=>/(19|20)\d{2}/.test(t)&&/[A-Za-z]{4}/.test(t),'set line',
@@ -3323,7 +3482,7 @@ async function imRun(){
                   t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial',{gray:true})]);
       jobs.push(['np',  imReadSmart(imFromRegion(B,.20,.438,.70,.084),'6','',null,'nameplate')]);
     }
-    if(IM.front){
+    if(IM.front && !IM.poke){
       const F=IM.front;
       jobs.push(['ban', imReadSmart(imFromRegion(F,.06,.76,.88,.20),'6','',null,'front banner')]);
       // The rookie shield is a small logo carrying ~8px lettering. The old crop
@@ -3342,10 +3501,37 @@ async function imRun(){
       res[k]=await p; done++;
       imProg('Read '+done+'/'+jobs.length+' regions',30+Math.round(46*done/jobs.length));
     }));
-    ['set','no','ser','np','ban','rc'].forEach(k=>{ if(!res[k]) res[k]={text:'',conf:0}; });
+    ['set','no','ser','np','ban','rc','pkname','pkfoot'].forEach(k=>{ if(!res[k]) res[k]={text:'',conf:0}; });
     imProg('Parsing\u2026',80);
 
-    if(IM.back){
+    if(IM.poke){
+      IM.raw.pokename=res.pkname.text;
+      IM.raw.pokefooter=res.pkfoot.text;
+      const pk=imParsePoke(res.pkfoot.text, res.pkname.text, frontAll);
+
+      f.sport='Pokemon';              conf.sport='hi';
+      f.player=pk.player;             conf.player=pk.player?'hi':'lo';
+      f.card_no=pk.card_no;           conf.card_no=pk.card_no?'hi':'none';
+      f.year=pk.year;                 conf.year=pk.year?'hi':'none';
+      f.set_code=pk.set_code;         conf.set_code=pk.set_code?'hi':'none';
+      f.set_total=pk.set_total;
+      f.lang=pk.lang;
+      // "PAF" + "EN" is literally the insert_id the vault stores ("PAFen"), so
+      // it's constructed from the card rather than looked up. That in turn is an
+      // exact filter for 30460, which is how the set and subset resolve.
+      if(pk.set_code){
+        f.insert_id = pk.set_code + (pk.lang ? pk.lang.toLowerCase() : 'en');
+        conf.insert_id='hi';
+      }
+      f.brand='Pokemon';              conf.brand='mid';
+      // 099/091 is card-of-set-size, not a print run — it must not become a
+      // parallel total. Pokemon parallels are named (Reverse Holo, Full Art),
+      // never serial-numbered this way.
+      conf.parallel_total='none';
+      conf.team='none'; conf.insert='none'; conf.rookie='none';
+      f.colour=imBorderColour(IM.front);
+      conf.colour=f.colour?'hi':'none';
+    } else if(IM.back){
       IM.raw.setline=res.set.text;
 
       // Score the crop AND the whole panel together. imPickSetLine picks the
@@ -3390,14 +3576,29 @@ async function imRun(){
       else if(backAnch){ f.card_no=backAnch; conf.card_no='mid'; }
       else if(cropAnch){ f.card_no=cropAnch; conf.card_no='mid'; }
       else if(cropNo.length>=2){ f.card_no=cropNo; conf.card_no='lo'; }
+      else {
+        const loose=imFixDigits(res.no.text).match(/\b(\d{2,4})\b/);
+        if(loose){ f.card_no=loose[1].replace(/^0+(?=\d)/,''); conf.card_no='lo'; }
+      }
 
       IM.raw.serial=res.ser.text;
-      let sm=imFixDigits(res.ser.text).match(/(\d{1,5})\s*\/\s*(\d{1,5})/);
-      let serLvl='hi';
-      if(!sm){ sm=imFixDigits(backAll).match(/(\d{1,5})\s*\/\s*(\d{1,5})/); serLvl='mid'; }
-      if(sm && Number(sm[2])>0 && Number(sm[1])<=Number(sm[2])){
-        f.serial=sm[1]+'/'+sm[2]; f.parallel_total=sm[2]; conf.parallel_total=serLvl;
-      } else conf.parallel_total='none';
+      // Same trap as the card number: the crop sits on a foil panel and can
+      // invent a serial ("/7144") that passes a shape test on its own. Read it
+      // from both sources and prefer the one they agree on; on disagreement
+      // trust the whole panel, which has surrounding text for context.
+      const ser = t => {
+        const m=imFixDigits(String(t||'')).match(/(\d{1,5})\s*\/\s*(\d{1,5})/);
+        if(!m) return null;
+        const a=Number(m[1]), b=Number(m[2]);
+        return imPlausibleRun(a,b) ? {s:m[1]+'/'+m[2], total:m[2]} : null;
+      };
+      const sCrop=ser(res.ser.text), sBack=ser(backAll);
+      let pick=null, serLvl='none';
+      if(sCrop && sBack && sCrop.s===sBack.s){ pick=sCrop; serLvl='hi'; }
+      else if(sBack){ pick=sBack; serLvl='mid'; }
+      else if(sCrop){ pick=sCrop; serLvl='mid'; }
+      if(pick){ f.serial=pick.s; f.parallel_total=pick.total; }
+      conf.parallel_total=serLvl;
 
       IM.raw.nameplate=res.np.text;
       let np=imParseNameplate(res.np.text);
@@ -3407,7 +3608,7 @@ async function imRun(){
       conf.team=f.team?conf.player:'none';
     }
 
-    if(IM.front){
+    if(IM.front && !IM.poke){
       IM.raw.banner=res.ban.text;
       f.insert=imParseBanner(res.ban.text, f.player) || imParseBanner(frontAll, f.player);
       conf.insert=f.insert?'mid':'lo';       // foil \u2014 never better than mid unaided
@@ -3427,9 +3628,28 @@ async function imRun(){
     }
 
     imProg('Matching the registry\u2026',92);
+
+    // Apply anything learned from previous corrections BEFORE matching, so a
+    // fixed set name feeds the registry scoring rather than arriving too late.
+    IM.src = imlSources(res, frontAll);
+    let learned=0;
+    Object.keys(IM.src).forEach(k=>{
+      const fix=imlRecall(k, IM.src[k]);
+      if(fix!=null){ f[k]=fix; conf[k]='learn'; learned++; }
+    });
+    IM.learnedCount=learned;
+
     IM.fields=f; IM.conf=conf;
     IM.cands=imMatchSets(f);
-    if(IM.cands.length && IM.cands[0].__score>=.72) IM.chosen=0;
+
+    // A set picked by hand for this same signature wins over the score.
+    const sig=imlSetSig(f, IM.src);
+    const remembered = sig ? IML.sets[sig] : null;
+    if(remembered){
+      const i=IM.cands.findIndex(c=>String(c.set_id||c.code||'')===String(remembered));
+      if(i>=0) IM.chosen=i;
+    }
+    if(IM.chosen<0 && IM.cands.length && IM.cands[0].__score>=.72) IM.chosen=0;
 
     imRender();
     if(!IM.stub) imVault();      // fire and forget \u2014 it redraws when it lands
@@ -3553,47 +3773,50 @@ function imTestLabel(){
 
 /* ---------- render ---------- */
 
-const IM_PILL={hi:'HIGH',mid:'MED',lo:'LOW',vault:'VAULT',none:'\u2014'};
+const IM_PILL={hi:'HIGH',mid:'MED',lo:'LOW',vault:'VAULT',learn:'LEARNED',none:'\u2014'};
 function imConfPill(k, level){
   const c = level || (IM.conf&&IM.conf[k]) || 'none';
   return '<span class="conf '+c+'">'+(IM_PILL[c]||'\u2014')+'</span>';
 }
 
-// Editable rows always render an input, empty or not \u2014 an OCR miss is exactly
-// when you need to type the value in, so a blank Brand must stay typeable.
-//
-// Copy works the way it does in Card Match, with one adjustment: on an editable
-// row the value is an <input>, and clicking it has to place the caret, not copy.
-// So the row-level handler is only attached when the row isn't editable, and the
-// LABEL is always a copy target \u2014 which is the gesture that works everywhere.
-function imField(key,label,value,editable,rawHtml,level,cls){
-  const copyRaw = (rawHtml===true)
-    ? String(value==null?'':value).replace(/<[^>]*>/g,'').trim()   // strip the colour swatch
+// Every value is editable \u2014 OCR gets things wrong and correcting them in place
+// is the point of this panel. Copy lives on the green LABEL only: clicking a
+// value has to place the caret, so the two gestures can't share a target.
+function imField(key,label,value,editable,rawHtml,level,cls,prefix){
+  const copyRaw=(rawHtml===true)
+    ? String(value==null?'':value).replace(/<[^>]*>/g,'').trim()
     : String(value==null?'':value);
-  const canCopy = copyRaw!=='';
-  const copyAttr = ' onclick="copyField(this)" data-copy="'+esc(copyRaw)+'" title="Click to copy"';
+  const canCopy=copyRaw!=='';
+  const copyAttr=canCopy
+    ? ' onclick="copyField(this)" data-copy="'+esc(copyRaw)+'" title="Click to copy"'
+    : '';
 
   let v;
-  if(editable){
-    v='<input id="imf_'+key+'" value="'+esc(String(value==null?'':value))+'" '+
-      'placeholder="\u2014" oninput="imEdit(\''+key+'\',this.value)">';
-  } else if(value===''||value==null){
-    v='<span class="fv muted">\u2014</span>';
+  if(editable===false){
+    v = (value===''||value==null)
+      ? '<span class="fv muted">\u2014</span>'
+      : '<span class="fv'+(rawHtml==='mono'?' mono':'')+'">'+(rawHtml===true?String(value):esc(String(value)))+'</span>';
   } else {
-    v='<span class="fv'+(rawHtml==='mono'?' mono':'')+'">'+(rawHtml===true?String(value):esc(String(value)))+'</span>';
+    v='<span class="fv'+(rawHtml==='mono'?' mono':'')+'">'+(prefix||'')+
+      '<input id="imf_'+key+'" value="'+esc(String(value==null?'':value))+'" '+
+      'placeholder="\u2014" oninput="imEdit(\''+key+'\',this.value)"></span>';
   }
 
-  const rowCopy = (!editable && canCopy);
-  return '<div class="frow imf'+(cls?' '+cls:'')+(rowCopy?' copyable':'')+'"'+
-         (rowCopy?copyAttr:'')+'>'+
-         '<span class="fk'+(canCopy&&!rowCopy?' copyk':'')+'"'+
-         (canCopy&&!rowCopy?copyAttr:'')+'>'+label+'</span>'+
+  return '<div class="frow imf'+(cls?' '+cls:'')+'">'+
+         '<span class="fk'+(canCopy?' copyk':'')+'"'+copyAttr+'>'+label+'</span>'+
          v+imConfPill(key,level)+'</div>';
 }
 
 function imEdit(key,val){
-  IM.fields[key]=val;
-  if(key==='brand'||key==='set'||key==='sport'){
+  // Every hand correction teaches the store, keyed on the raw text that produced
+  // the wrong value — so the same misread is fixed automatically next time.
+  if(IM.src && IM.src[key]) imlTeach(key, IM.src[key], val);
+  if(key==='colour'){
+    IM.fields.colour = val ? {hex:(IM.fields.colour&&IM.fields.colour.hex)||'#888', name:val} : null;
+  } else {
+    IM.fields[key]=val;
+  }
+  if(key==='brand'||key==='set'||key==='sport'||key==='year'){
     IM.cands=imMatchSets(IM.fields); IM.chosen=-1;
     const el=$('imCands'); if(el) el.innerHTML=imCandsHtml();
   }
@@ -3605,7 +3828,8 @@ function imCandsHtml(){
     const sid=r.set_id||'';
     return '<button class="imcand'+(i===IM.chosen?' on':'')+'" onclick="imPick('+i+')">'+
       '<span><span class="nm">'+esc(imSetLabel(r))+'</span>'+
-      '<span class="sub">'+esc(r.__sport)+(r.code?(' \u00b7 '+esc(r.code)):'')+(r.year?(' \u00b7 '+esc(r.year)):'')+'</span></span>'+
+      '<span class="sub">'+esc(r.__sport)+(r.code?(' \u00b7 '+esc(r.code)):'')+(r.year?(' \u00b7 '+esc(r.year)):'')+
+        (r.__byCode?' \u00b7 matched on set code':'')+'</span></span>'+
       '<span class="sid">'+esc(sid||r.code||'\u2014')+'</span>'+
       '<span class="sc">'+Math.round(r.__score*100)+'</span></button>';
   }).join('');
@@ -3613,6 +3837,9 @@ function imCandsHtml(){
 
 function imPick(i){
   IM.chosen=i;
+  const r=IM.cands[i];
+  const sig=imlSetSig(IM.fields, IM.src);
+  if(sig && r){ IML.sets[sig]=String(r.set_id||r.code||''); imlSave(); }
   imRender();                 // Set ID is a first-class row now, so redraw it all
   if(!IM.sample) imVault();   // a new set changes what 30460 should be asked
 }
@@ -3640,10 +3867,13 @@ function imSetLabel(r){
 // bad read is one click instead of three fields of typing.
 function imSetNameRow(setName, sel){
   const can=!!sel;
-  return '<div class="frow imf'+(can?' copyable':'')+'"'+
-    (can?' onclick="imApplySet()" title="Fill Year, Brand and Set from this registry match"':'')+'>'+
-    '<span class="fk">Set Name</span>'+
-    '<span class="fv">'+(setName?esc(setName):'\u2014')+
+  const copyAttr=setName
+    ? ' onclick="copyField(this)" data-copy="'+esc(setName)+'" title="Click to copy"' : '';
+  return '<div class="frow imf">'+
+    '<span class="fk'+(setName?' copyk':'')+'"'+copyAttr+'>Set Name</span>'+
+    '<span class="fv'+(can?' applyable':'')+'"'+
+      (can?' onclick="imApplySet()" title="Fill Year, Brand and Set from this registry match"':'')+'>'+
+      (setName?esc(setName):'\u2014')+
       (can?'<span class="applyhint">click to apply \u2192 year / brand / set</span>':'')+'</span>'+
     imConfPill('set_name', setName?(sel?'hi':'mid'):'none')+'</div>';
 }
@@ -3673,21 +3903,38 @@ function imIdRows(){
   const f=IM.fields, v=IM.vault||{};
   const sel = IM.chosen>=0 ? IM.cands[IM.chosen] : null;
 
-  const setName = sel ? imSetLabel(sel) : [f.brand,f.set].filter(Boolean).join(' ');
-  const setId   = (sel && sel.set_id) || v.set_id || '';
-  // A registry pick is only as good as the score behind it.
+  const setName = sel ? imSetLabel(sel)
+                      : (v.set_name || [f.brand,f.set].filter(Boolean).join(' '));
+  // A value typed by hand outranks both the registry pick and the vault.
+  const setId    = f.set_id    || (sel && sel.set_id) || v.set_id || '';
+  const insertId = f.insert_id || v.insert_id || '';   // card-derived wins
+  const subsetId = f.subset_id || v.subset_id || '';
+  // A vault parallel is only meaningful if the lookup was pinned to this copy.
+  // Unpinned, it's just whichever parallel of this card the query happened to
+  // return — worse than showing nothing, because it looks authoritative.
+  const vaultParallel = IM.vaultPinned ? (v.parallel||'') : '';
+  const parallel = f.parallel || vaultParallel || '';
+
   const setIdLvl = setId
-    ? (sel ? (sel.__score>=.85?'hi':(sel.__score>=.70?'mid':'lo')) : 'vault')
+    ? (f.set_id ? 'hi' : (sel ? (sel.__score>=.85?'hi':(sel.__score>=.70?'mid':'lo')) : 'vault'))
     : 'none';
 
   return imField('sport','Category',f.sport,true) +
+    (f.set_code||f.set_total
+      ? imField('set_code','Set Code',
+          [f.set_code, f.lang, f.set_total?('of '+f.set_total):''].filter(Boolean).join(' \u00b7 '),
+          true,'mono', f.set_code?'hi':'none',
+          (sel&&sel.__byCode)?'vaulted':'')
+      : '') +
     imField('insert','Subset / Insert',f.insert||v.subset||v.insert,true) +
     imSetNameRow(setName, sel) +
-    imField('set_id','Set ID',setId,false,'mono', setIdLvl, setId?'vaulted':'') +
-    imField('insert_id','Insert ID',v.insert_id,false,'mono', v.insert_id?'vault':'none', v.insert_id?'vaulted':'') +
-    imField('subset_id','Subset ID',v.subset_id,false,'mono', v.subset_id?'vault':'none', v.subset_id?'vaulted':'') +
-    imField('parallel','Parallel',f.parallel||v.parallel,!!f.parallel, false,
-            (f.parallel||v.parallel)?(f.parallel?'hi':'vault'):'none');
+    imField('set_id','Set ID',setId,true,'mono', setIdLvl, setId?'vaulted':'') +
+    imField('insert_id','Insert ID',insertId,true,'mono',
+            insertId?(f.insert_id?'hi':'vault'):'none', insertId?'vaulted':'') +
+    imField('subset_id','Subset ID',subsetId,true,'mono',
+            subsetId?(f.subset_id?'hi':'vault'):'none', subsetId?'vaulted':'') +
+    imField('parallel','Parallel',parallel,true,false,
+            parallel?(f.parallel?'hi':'vault'):'none');
 }
 
 function imRender(){
@@ -3723,15 +3970,28 @@ function imRender(){
         imField('player','Player',f.player,true)+
         imField('team','Team',f.team,true)+
         imField('card_no','Card No.',f.card_no,true)+
-        imField('rookie','Rookie',f.rookie?'Yes':'',false)+
-        imField('colour','Color',f.colour?(sw+esc(f.colour.name)):'',false,true)+
-        imField('parallel_total','Parallel total',f.parallel_total?('/'+f.parallel_total):'',false,'mono')+
+        imField('rookie','Rookie',f.rookie===true?'Yes':(f.rookie||''),true)+
+        imField('colour','Color',f.colour?f.colour.name:'',true,false,null,'',f.colour?sw:'')+
+        imField('parallel_total','Parallel total',f.parallel_total,true,'mono')+
       '</div>'+
     '</div>'+
 
     '<div class="impanel" style="margin-top:18px">'+
       '<div class="imsec"><span class="label">Set ID candidates \u2014 registry scored against the card</span>'+
         '<div id="imCands" class="imcands">'+imCandsHtml()+'</div></div>'+
+
+      '<div class="imsec"><span class="label">Learned corrections</span>'+
+        '<div class="fv muted" style="font-size:12.5px;line-height:1.7">'+
+          (imlCount()
+            ? esc(String(imlCount()))+' stored on this browser'+
+              (IM.learnedCount ? ' \u00b7 <b style="color:#8ab8ff">'+IM.learnedCount+' applied to this card</b>' : '')+
+              '. Every field you correct is remembered against the raw text that produced it, '+
+              'so the same misread is fixed automatically next time.'
+            : 'Nothing learned yet. Correct any field and it will be remembered against the '+
+              'raw text that produced it \u2014 the same misread gets fixed automatically next time.')+
+        '</div>'+
+        (imlCount()?'<button class="imbtn ghost" style="margin-top:12px" onclick="imlForget()">Forget all corrections</button>':'')+
+      '</div>'+
 
       (f.card_no||f.player ?
         '<div class="imsec"><span class="label">Vault cross-check</span>'+
@@ -3750,7 +4010,7 @@ function imRender(){
 
       '<div class="imsec"><span class="label">Regions read \u2014 '+(IM.sample?'sample text, no crops':'what Tesseract actually saw')+'</span>'+
         (IM.crops.length
-          ? '<div class="imcrops">'+IM.crops.slice(0,10).map((c,i)=>'<figure><span id="imcrop'+i+'"></span><figcaption>'+esc(c.label)+'</figcaption></figure>').join('')+'</div>'
+          ? '<div class="imcrops">'+IM.crops.slice(0,24).map((c,i)=>'<figure><span id="imcrop'+i+'"></span><figcaption>'+esc(c.label)+'</figcaption></figure>').join('')+'</div>'
           : '<div class="fv muted" style="font-size:12.5px;margin-bottom:10px">Fixture data \u2014 drop a real scan to see the preprocessed crops.</div>')+
         '<div class="imraw" style="margin-top:12px">'+esc(Object.keys(IM.raw).map(k=>k.toUpperCase()+'\n'+(IM.raw[k]||'(nothing)')).join('\n\n'))+'</div>'+
       '</div>'+
@@ -3769,7 +4029,7 @@ function imRender(){
     host.appendChild(z);
   });
 
-  IM.crops.slice(0,10).forEach((c,i)=>{
+  IM.crops.slice(0,24).forEach((c,i)=>{
     const host=$('imcrop'+i); if(!host) return;
     const small=imCanvas(190, Math.max(18,190*c.canvas.height/c.canvas.width));
     small.getContext('2d').drawImage(c.canvas,0,0,small.width,small.height);
@@ -3791,6 +4051,15 @@ async function imVault(){
   if(f.card_no) p.set('card_no', f.card_no);
   const chosen = IM.chosen>=0 ? IM.cands[IM.chosen] : null;
   if(chosen) p.set('set_name', imSetLabel(chosen));
+  // Print run is what separates one parallel of this card from another. Without
+  // it the lookup matches them all and returns whichever row is most populated,
+  // which is how a Blue /199 came back labelled "White Sparkle".
+  if(f.parallel_total) p.set('parallel_total', f.parallel_total);
+  if(f.parallel)       p.set('parallel_name',  f.parallel);
+  // An insert_id read off the card is an exact key — far stronger than the set
+  // name, which for Pokemon we don't have until the vault tells us.
+  if(f.insert_id)      p.set('insert_id', f.insert_id);
+  IM.vaultPinned = !!(f.parallel_total || f.parallel);
 
   IM.vaultState='loading';
   const badge=$('imVaultState'); if(badge) badge.textContent='querying 30460\u2026';
@@ -3803,8 +4072,15 @@ async function imVault(){
     else {
       IM.vault={ set_id:c.set_id||'', insert:c.insert||'', insert_id:c.insert_id||'',
                  subset:c.subset||'', subset_id:c.subset_id||'',
-                 parallel:c.parallel||'', parallel_total:c.parallel_total||'' };
+                 parallel:c.parallel||'', parallel_total:c.parallel_total||'',
+                 set_name:c.set_name||'' };
       IM.vaultState='ok';
+      // The vault knows the real set. If it's in the registry, select that row
+      // so Set ID and the candidate list agree instead of contradicting.
+      if(IM.vault.set_id){
+        const i=IM.cands.findIndex(x=>String(x.set_id||'')===String(IM.vault.set_id));
+        if(i>=0) IM.chosen=i;
+      }
     }
   }catch(e){
     IM.vault=null; IM.vaultState='offline'; IM.vaultError=String(e.message||e);
@@ -3816,7 +4092,8 @@ function imVaultBanner(){
   const st=IM.vaultState;
   if(IM.sample) return '<span class="label">30460 not queried on a test run</span>';
   if(st==='loading') return '<span class="label">Querying 30460\u2026</span>';
-  if(st==='ok')      return '<span class="label" style="color:var(--green)">Matched in the vault \u2014 IDs above are from 30460</span>';
+  if(st==='ok')      return '<span class="label" style="color:var(--green)">Matched in the vault \u2014 IDs above are from 30460'+
+    (IM.vaultPinned?'' : ' \u00b7 parallel not pinned (no print run read), so it is left blank')+'</span>';
   if(st==='nomatch') return '<span class="label">No vault row matched \u2014 this card may not be in 30460 yet</span>';
   if(st==='offline') return '<span class="label">Vault unreachable ('+esc(IM.vaultError||'')+') \u2014 /api/card-match only exists on the Vercel deploy</span>';
   return '<span class="label">Not queried yet</span>';

@@ -84,7 +84,17 @@ const FILTER_COLS = {
   set_name:        ['setname','set'],
   insert_name:     ['insertname','insert'],
   subset_name:     ['subsetname','subset'],
-  parallel_name:   ['parallelname','parallel']
+  parallel_name:   ['parallelname','parallel'],
+  // Print run is the one thing that separates otherwise identical parallels of
+  // the same card. Without it, an identity lookup on player + card_no + set
+  // matches every parallel and the most-populated row wins arbitrarily.
+  parallel_total:  ['paralleltotal','printrun','serialtotal','printnum'],
+  // Pokemon cards print their insert id on the face as a set code plus language
+  // ("PAF EN" -> "PAFen"), so it can be filtered on directly — an exact key,
+  // where a name match would have to guess "Paldean Fates".
+  insert_id:       ['insertid'],
+  subset_id:       ['subsetid'],
+  set_id:          ['setid']
 };
 // Identifier comparison has to survive formatting differences: the "8AC" prefix (whose 8 is a
 // digit), and leading zeros that vanish if Metabase stores the column as a number.
@@ -98,6 +108,11 @@ function rowMatchesFilters(row, filters) {
     const want = filters[slug];
     if (slug === 'cert_number' || slug === 'ac_number') {
       if (idKey(got) === '' || idKey(got) !== idKey(want)) return false;
+    } else if (slug === 'parallel_total') {
+      // Metabase may hand this back as a number, so compare numerically.
+      const a = parseFloat(String(got).replace(/[^0-9.]/g, ''));
+      const b = parseFloat(String(want).replace(/[^0-9.]/g, ''));
+      if (!(isFinite(a) && isFinite(b) && a === b)) return false;
     } else if (slug === 'grade') {
       const a = parseFloat(String(got).replace(/[^0-9.]/g, ''));
       const b = parseFloat(String(want).replace(/[^0-9.]/g, ''));
@@ -187,7 +202,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const IDK = ['player_name', 'card_no', 'grade', 'grading_company', 'set_name', 'insert_name', 'subset_name', 'parallel_name'];
+  const IDK = ['player_name', 'card_no', 'grade', 'grading_company', 'set_name', 'insert_name', 'subset_name', 'parallel_name', 'parallel_total', 'insert_id', 'subset_id', 'set_id'];
   const idFilters = {};
   IDK.forEach(k => { if (q[k] != null && String(q[k]).trim() !== '') idFilters[k] = String(q[k]).trim(); });
 
