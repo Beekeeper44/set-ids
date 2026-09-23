@@ -3012,24 +3012,30 @@ async function imReadSmart(region, psm, whitelist, test, label, opt){
     await new Promise(r=>setTimeout(r, 240+Math.random()*380));   // feel like a read
     return { text, conf: text?92:0, lines:[] };
   }
+  opt=opt||{};
   const dark = imMeanLum(region) < 122;
   const order = dark ? [true,false] : [false,true];
-  const ok = r => test ? test(r.text) : (r.conf>=72 && /[A-Za-z0-9]{3}/.test(r.text));
+  // Tesseract's confidence runs low on a whole card face even when the read is
+  // perfectly usable, so a conf>=72 gate made every whole-panel read run all
+  // three passes. Judge those on whether they actually produced lines instead.
+  const ok = r => test ? test(r.text)
+    : (opt && opt.whole)
+      ? ((r.lines && r.lines.length>=5) || String(r.text||'').replace(/\s/g,'').length>=60)
+      : (r.conf>=72 && /[A-Za-z0-9]{3}/.test(r.text));
 
   // Otsu is a global threshold. On a flat panel it's ideal; over a chevron or
   // refractor background the pattern wins the histogram and the glyphs get
   // swallowed \u2014 which is exactly what happened to the serial and the card
   // number. So those regions get a grayscale pass too: Tesseract reads
   // grayscale fine, and skipping the threshold keeps thin foil strokes alive.
-  opt=opt||{};
   // A whole panel is mostly artwork with text scattered through it. Otsu picks a
   // single threshold for the entire thing, so the photo decides it and the small
   // print gets crushed \u2014 grayscale first is far better here, and the page is
   // worth more pixels than a one-line crop.
   const tries = opt.whole
-    ? [{invert:false,binarize:false,maxPx:3.2e6},
-       {invert:true, binarize:false,maxPx:3.2e6},
-       {invert:order[0],binarize:true,maxPx:3.2e6}]
+    ? [{invert:false,binarize:false,maxPx:2.2e6},
+       {invert:true, binarize:false,maxPx:2.2e6},
+       {invert:order[0],binarize:true,maxPx:2.2e6}]
     : [{invert:order[0],binarize:true},{invert:order[1],binarize:true}];
   if(opt.gray) tries.push({invert:order[0],binarize:false},{invert:order[1],binarize:false});
 
@@ -3767,7 +3773,7 @@ async function imRun(){
   if(IM.busy) return;
   if(!IM.front && !IM.back && !IM.label){ toast('Drop a card image first'); return; }
   IM.busy=true; IM.crops=[]; IM.chosen=-1; IM.poke=false;
-  IM.nameConflict=null; IM.nameAgree=false;
+  IM.nameConflict=null; IM.nameAgree=false; IM.lazySerial=null;
   IM.sample = IM.stub ? (IM.mode==='label'?'Label':'Card') : false;
   $('imGo').disabled=true;
   const t0=performance.now();
@@ -3785,6 +3791,9 @@ async function imRun(){
     // panel is the back, before a single crop is cut.
     let backAll='', frontAll='';
     const res={};
+    // Declared out here because the category vote, which runs in the FRONT
+    // block, needs the sport word the set line gave us in the BACK block.
+    let setSport='';
 
     if(IM.stub){
       const rb0 = IM.back ? await imReadSmart(IM.back,'11','',null,'back \u2014 whole',{whole:true}) : null;
@@ -3848,14 +3857,17 @@ async function imRun(){
                   t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial',
                   {gray:true, thicken:true, targetW:2200, maxPx:2.5e6, scaleMax:8})]);
       jobs.push(['np',  imReadSmart(imFromRegion(B,.20,.438,.70,.084),'6','',null,'nameplate')]);
-      // Vertical serial on the right edge, tried both rotations since the text
-      // may read bottom-up or top-down depending on the product.
-      jobs.push(['serR', imReadSmart(imRotate(imFromRegion(B,.86,.04,.14,.42),-90),'7','0123456789/',
-                  t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial \u00b7 rotated',
-                  {gray:true, thicken:true, targetW:2200, maxPx:2.5e6, scaleMax:8})]);
-      jobs.push(['serR2',imReadSmart(imRotate(imFromRegion(B,.86,.04,.14,.42),90),'7','0123456789/',
-                  t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial \u00b7 rotated cw',
-                  {gray:true, thicken:true, targetW:2200, maxPx:2.5e6, scaleMax:8})]);
+      // Vertical edge serials are the exception, not the rule, and each rotation
+      // costs up to four passes. Hold them back \u2014 they only run if the normal
+      // serial read comes up empty (see the lazy block below).
+      IM.lazySerial = () => Promise.all([
+        imReadSmart(imRotate(imFromRegion(B,.86,.04,.14,.42),-90),'7','0123456789/',
+          t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial \u00b7 rotated',
+          {gray:true, thicken:true, targetW:2200, maxPx:2.2e6, scaleMax:8}),
+        imReadSmart(imRotate(imFromRegion(B,.86,.04,.14,.42),90),'7','0123456789/',
+          t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial \u00b7 rotated cw',
+          {gray:true, thicken:true, targetW:2200, maxPx:2.2e6, scaleMax:8})
+      ]);
     }
     if(IM.front && !IM.poke){
       const F=IM.front;
@@ -3865,9 +3877,9 @@ async function imRun(){
       // AND the insert name vertically on opposite sides. Read both edges both
       // ways round \u2014 general text, not just digits, so names come through too.
       jobs.push(['edgeL', imReadSmart(imRotate(imFromRegion(F,0,.05,.13,.90),-90),'6','',null,
-                  'front edge \u00b7 left',{gray:true, targetW:2600, maxPx:3e6, scaleMax:8})]);
+                  'front edge \u00b7 left',{targetW:2200, maxPx:2.2e6, scaleMax:8})]);
       jobs.push(['edgeR', imReadSmart(imRotate(imFromRegion(F,.87,.05,.13,.90),90),'6','',null,
-                  'front edge \u00b7 right',{gray:true, targetW:2600, maxPx:3e6, scaleMax:8})]);
+                  'front edge \u00b7 right',{targetW:2200, maxPx:2.2e6, scaleMax:8})]);
       // The rookie shield is a small logo carrying ~8px lettering. The old crop
       // DID contain it — the problem was zoom: targetW 1250 across a 627px-wide
       // strip caps the scale at 2x, so "ROOKIE" arrived at 16px and Tesseract
@@ -3924,6 +3936,7 @@ async function imRun(){
       conf.set = parsed.year&&parsed.set ? 'hi' : (parsed.year?'mid':'lo');
 
       Object.assign(f,{year:parsed.year,brand:parsed.brand,set:parsed.set,sport:parsed.sport});
+      setSport=parsed.sport;
       // Sport is a hard filter on the registry, so it's worth voting on rather
       // than trusting one mangled word. Deferred until after the team is
       // resolved, since the team is one of the voters.
@@ -3984,8 +3997,14 @@ async function imRun(){
         return imPlausibleRun(a,b) ? {s:m[1]+'/'+m[2], total:m[2]} : null;
       };
       const sCrop=ser(res.ser.text), sBack=ser(backAll);
-      const sRot = ser(res.serR.text) || ser(res.serR2.text)
-                || ser(res.edgeL.text) || ser(res.edgeR.text);   // front edges too
+      let sRot = ser(res.edgeL.text) || ser(res.edgeR.text);     // front edges, already read
+      if(!sCrop && !sBack && !sRot && IM.lazySerial){
+        // Nothing found the serial the normal way, so now it's worth rotating
+        // the back edge. On the great majority of cards this never runs.
+        const [r1,r2]=await IM.lazySerial();
+        res.serR=r1; res.serR2=r2;
+        sRot = ser(r1.text) || ser(r2.text);
+      }
       let pick=null, serLvl='none';
       if(sCrop && sBack && sCrop.s===sBack.s){ pick=sCrop; serLvl='hi'; }
       else if(sRot && sBack && sRot.s===sBack.s){ pick=sRot; serLvl='hi'; }
@@ -4084,7 +4103,7 @@ async function imRun(){
       }
 
       // ---- category: vote across copyright word, league text, stat headers, team ----
-      const vote=imSportVote(parsed.sport, backAll, frontAll+' '+res.ban.text, f.team);
+      const vote=imSportVote(setSport, backAll, frontAll+' '+res.ban.text, f.team);
       if(vote.sport){
         f.sport=vote.sport;
         conf.sport = vote.votes>=3 ? 'hi' : (vote.votes>=2 ? 'mid' : 'lo');
