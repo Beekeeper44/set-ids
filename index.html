@@ -3018,10 +3018,16 @@ async function imReadSmart(region, psm, whitelist, test, label, opt){
   // Tesseract's confidence runs low on a whole card face even when the read is
   // perfectly usable, so a conf>=72 gate made every whole-panel read run all
   // three passes. Judge those on whether they actually produced lines instead.
-  const ok = r => test ? test(r.text)
-    : (opt && opt.whole)
-      ? ((r.lines && r.lines.length>=5) || String(r.text||'').replace(/\s/g,'').length>=60)
-      : (r.conf>=72 && /[A-Za-z0-9]{3}/.test(r.text));
+  // For a whole panel, "produced some lines" is too weak \u2014 noise produces lines.
+  // Require real alphabetic content as well, so a junk pass keeps looking.
+  const ok = r => {
+    if(test) return test(r.text);
+    if(opt && opt.whole){
+      const alpha=(String(r.text||'').match(/[A-Za-z]/g)||[]).length;
+      return (r.lines && r.lines.length>=6 && alpha>=80) || (r.conf>=70 && alpha>=60);
+    }
+    return r.conf>=72 && /[A-Za-z0-9]{3}/.test(r.text);
+  };
 
   // Otsu is a global threshold. On a flat panel it's ideal; over a chevron or
   // refractor background the pattern wins the histogram and the glyphs get
@@ -3032,10 +3038,14 @@ async function imReadSmart(region, psm, whitelist, test, label, opt){
   // single threshold for the entire thing, so the photo decides it and the small
   // print gets crushed \u2014 grayscale first is far better here, and the page is
   // worth more pixels than a one-line crop.
+  // This list used to start at invert:false regardless of the panel. Harmless
+  // while every pass ran anyway \u2014 but once the first acceptable pass started
+  // winning, a white-on-black back got read at the wrong polarity and stopped
+  // there. Follow the measured luminance like every other region does.
   const tries = opt.whole
-    ? [{invert:false,binarize:false,maxPx:2.2e6},
-       {invert:true, binarize:false,maxPx:2.2e6},
-       {invert:order[0],binarize:true,maxPx:2.2e6}]
+    ? [{invert:order[0],binarize:false,maxPx:2.2e6},
+       {invert:order[1],binarize:false,maxPx:2.2e6},
+       {invert:order[0],binarize:true, maxPx:2.2e6}]
     : [{invert:order[0],binarize:true},{invert:order[1],binarize:true}];
   if(opt.gray) tries.push({invert:order[0],binarize:false},{invert:order[1],binarize:false});
 
@@ -3814,7 +3824,11 @@ async function imRun(){
         // Pick the side that actually looks like a Pokemon card face.
         swap = imPokeFrontScore(b.text) > imPokeFrontScore(a.text);
       } else {
-        swap = imBackness(a.text) > imBackness(b.text);
+        // Only swap on a clear margin. When both reads are poor the scores are
+        // noise, and the layout order is better evidence than a coin flip.
+        const sa=imBackness(a.text), sb=imBackness(b.text);
+        IM.backnessScores=[sa,sb];
+        swap = sa > sb + 2;
       }
       if(swap){
         const t=IM.front; IM.front=IM.back; IM.back=t;
