@@ -2617,7 +2617,7 @@ function imProg(msg, pct){
 function imReset(){
   IM.file=null; IM.img=null; IM.front=null; IM.back=null; IM.label=null; IM.shots=[]; IM.mode='';
   IM.fields={}; IM.raw={}; IM.crops=[]; IM.cands=[]; IM.chosen=-1; IM.sample=false;
-  IM.stub=null; IM.stubColour=null; IM.poke=false; IM.vault=null; IM.vaultState=''; IM.vaultError=''; IM.vaultPinned=false;
+  IM.stub=null; IM.stubColour=null; IM.poke=false; IM.suppressed=[]; IM.nameConflict=null; IM.nameAgree=false; IM.backLines=[]; IM.backLinesSrc=[]; IM.frontLines=[]; IM.frontLinesSrc=[]; IM.vault=null; IM.vaultState=''; IM.vaultError=''; IM.vaultPinned=false;
   const pv=$('imPreview'); if(pv){ pv.hidden=true; pv.innerHTML=''; }
   $('imGo').disabled=true;
   $('imEmpty').hidden=false; $('imResult').hidden=true; $('imResult').innerHTML='';
@@ -2653,6 +2653,19 @@ function imLoad(file){
 }
 
 /* ---------- canvas helpers ---------- */
+
+// Some products run the serial vertically up the card edge (Prizm prints
+// "18/25" sideways on the right). No amount of preprocessing helps \u2014 the text
+// has to be turned upright before it's read.
+function imRotate(src, deg){
+  const rad=deg*Math.PI/180, swap=(deg%180)!==0;
+  const c=imCanvas(swap?src.height:src.width, swap?src.width:src.height);
+  const ctx=c.getContext('2d');
+  ctx.translate(c.width/2, c.height/2);
+  ctx.rotate(rad);
+  ctx.drawImage(src, -src.width/2, -src.height/2);
+  return c;
+}
 
 function imCanvas(w,h){ const c=document.createElement('canvas'); c.width=Math.max(1,Math.round(w)); c.height=Math.max(1,Math.round(h)); return c; }
 
@@ -2835,10 +2848,35 @@ function imPrep(src, opts){
   if(opts.binarize!==false){
     const t=imOtsu(hist,N);
     for(let p=0;p<N;p++) gray[p]=gray[p]>t?255:0;
+    // Foil-stamped serials are relief, not ink: the threshold catches the lit
+    // face of each stroke and drops the shadowed side, so glyphs come out thin
+    // and broken. One dilation of the dark pixels closes them back up.
+    if(opts.thicken) imDilateDark(gray,W,H);
   }
   for(let i=0,p=0;i<d.length;i+=4,p++){ d[i]=d[i+1]=d[i+2]=gray[p]; }
   ctx.putImageData(id,0,0);
   return c;
+}
+
+// 3x3 min filter over the dark (text) pixels \u2014 grows strokes by one pixel and
+// bridges the gaps an embossed edge leaves behind.
+function imDilateDark(g,W,H){
+  const src=g.slice();
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      const i=y*W+x;
+      if(src[i]===0) continue;
+      let dark=false;
+      for(let dy=-1;dy<=1&&!dark;dy++){
+        const yy=y+dy; if(yy<0||yy>=H) continue;
+        for(let dx=-1;dx<=1;dx++){
+          const xx=x+dx; if(xx<0||xx>=W) continue;
+          if(src[yy*W+xx]===0){ dark=true; break; }
+        }
+      }
+      if(dark) g[i]=0;
+    }
+  }
 }
 
 // Separable box blur with running sums \u2014 O(N) regardless of radius, so the
@@ -2936,8 +2974,18 @@ async function imRead(canvas, psm, whitelist){
       });
       slot.profile=prof;
     }
-    const { data } = await slot.w.recognize(canvas);
-    return { text:String(data.text||'').trim(), conf:Number(data.confidence)||0 };
+    const { data } = await slot.w.recognize(canvas, {}, {text:true, blocks:true});
+    // Line boxes are what let us find a field by how it LOOKS on the card
+    // rather than by where we guessed it would be.
+    const lines=[];
+    try{
+      (data.blocks||[]).forEach(b=>(b.paragraphs||[]).forEach(par=>(par.lines||[]).forEach(l=>{
+        const t=String(l.text||'').replace(/\s+/g,' ').trim();
+        if(t && l.bbox) lines.push({text:t, x0:l.bbox.x0, y0:l.bbox.y0, x1:l.bbox.x1, y1:l.bbox.y1,
+                                    h:l.bbox.y1-l.bbox.y0, conf:Number(l.confidence)||0});
+      })));
+    }catch(e){}
+    return { text:String(data.text||'').trim(), conf:Number(data.confidence)||0, lines };
   }catch(e){ return { text:'', conf:0 }; }
   finally{ if(slot) slot.busy=false; }
 }
@@ -2962,7 +3010,7 @@ async function imReadSmart(region, psm, whitelist, test, label, opt){
     const key=String(label||'').replace(/\s*\u25aa.*$/,'').trim();
     const text=Object.prototype.hasOwnProperty.call(IM.stub,key)?IM.stub[key]:'';
     await new Promise(r=>setTimeout(r, 240+Math.random()*380));   // feel like a read
-    return { text, conf: text?92:0 };
+    return { text, conf: text?92:0, lines:[] };
   }
   const dark = imMeanLum(region) < 122;
   const order = dark ? [true,false] : [false,true];
@@ -2985,9 +3033,9 @@ async function imReadSmart(region, psm, whitelist, test, label, opt){
     : [{invert:order[0],binarize:true},{invert:order[1],binarize:true}];
   if(opt.gray) tries.push({invert:order[0],binarize:false},{invert:order[1],binarize:false});
 
-  let best={text:'',conf:0};
+  let best={text:'',conf:0,lines:[]};
   for(const t of tries){
-    const prepped=imPrep(region,{invert:t.invert, binarize:t.binarize,
+    const prepped=imPrep(region,{invert:t.invert, binarize:t.binarize, thicken:opt.thicken,
       maxPx:t.maxPx||opt.maxPx, targetW:opt.targetW, scaleMax:opt.scaleMax});
     if(label) IM.crops.push({
       label: label+(t.invert?' \u25aa inv':'')+(t.binarize?'':' \u25aa gray'),
@@ -3127,6 +3175,8 @@ function imParseSetLine(text){
 // A nameplate crop can catch the jersey lettering above the bar, which OCRs as
 // junk like "REO ." \u2014 and being first, it became the player while the real name
 // slid into Team. Require a line to look like a name before accepting it.
+const IM_CARDNO_RX=/\bN[o0O]?\s*[\.\u00b0]?\s*([A-Z]{1,5}-[A-Z0-9]{1,6}|\d{1,4}[A-Z]?)\b/i;
+
 // "No. 262" in Panini's bold italic OCRs as "WB. 262" often enough to matter.
 // imFixDigits then maps B->8, and a regex that allows a letter prefix happily
 // captures "W8" and stops \u2014 the real number is never even considered.
@@ -3147,12 +3197,295 @@ function imPlausibleRun(a,b){
 
 function imCardNo(text){
   const raw=String(text||'');
-  const hy=raw.match(/\b([A-Z]{1,4}\s*-\s*\d{1,4})\b/i);
+  // Insert and auto sets use alphanumeric codes — CS-CJM, DA-KKV, BDC-25.
+  const hy=raw.match(/\b([A-Z]{1,5}\s*-\s*[A-Z0-9]{1,6})\b/);
   if(hy) return hy[1].replace(/\s+/g,'').toUpperCase();
   const runs=imFixDigits(raw).match(/\d{1,5}/g)||[];
   if(!runs.length) return '';
   runs.sort((a,b)=>b.length-a.length || Number(b)-Number(a));
   return runs[0].replace(/^0+(?=\d)/,'');
+}
+
+// ---------- closed vocabularies ----------
+// A team name is one of about 120 strings. That makes it snappable the same way
+// a set name snaps to the registry: a mangled read still lands on the right
+// entry, which is worth far more than reading it perfectly. Fronts often carry
+// only the nickname ("COMMANDERS"), so nicknames match too.
+const IM_TEAMS=[
+ ['Atlanta Hawks','hawks'],['Boston Celtics','celtics'],['Brooklyn Nets','nets'],
+ ['Charlotte Hornets','hornets'],['Chicago Bulls','bulls'],['Cleveland Cavaliers','cavaliers'],
+ ['Dallas Mavericks','mavericks'],['Denver Nuggets','nuggets'],['Detroit Pistons','pistons'],
+ ['Golden State Warriors','warriors'],['Houston Rockets','rockets'],['Indiana Pacers','pacers'],
+ ['Los Angeles Clippers','clippers'],['Los Angeles Lakers','lakers'],['Memphis Grizzlies','grizzlies'],
+ ['Miami Heat','heat'],['Milwaukee Bucks','bucks'],['Minnesota Timberwolves','timberwolves'],
+ ['New Orleans Pelicans','pelicans'],['New York Knicks','knicks'],['Oklahoma City Thunder','thunder'],
+ ['Orlando Magic','magic'],['Philadelphia 76ers','76ers'],['Phoenix Suns','suns'],
+ ['Portland Trail Blazers','blazers'],['Sacramento Kings','kings'],['San Antonio Spurs','spurs'],
+ ['Toronto Raptors','raptors'],['Utah Jazz','jazz'],['Washington Wizards','wizards'],
+ ['Arizona Cardinals','cardinals'],['Atlanta Falcons','falcons'],['Baltimore Ravens','ravens'],
+ ['Buffalo Bills','bills'],['Carolina Panthers','panthers'],['Chicago Bears','bears'],
+ ['Cincinnati Bengals','bengals'],['Cleveland Browns','browns'],['Dallas Cowboys','cowboys'],
+ ['Denver Broncos','broncos'],['Detroit Lions','lions'],['Green Bay Packers','packers'],
+ ['Houston Texans','texans'],['Indianapolis Colts','colts'],['Jacksonville Jaguars','jaguars'],
+ ['Kansas City Chiefs','chiefs'],['Las Vegas Raiders','raiders'],['Los Angeles Chargers','chargers'],
+ ['Los Angeles Rams','rams'],['Miami Dolphins','dolphins'],['Minnesota Vikings','vikings'],
+ ['New England Patriots','patriots'],['New Orleans Saints','saints'],['New York Giants','giants'],
+ ['New York Jets','jets'],['Philadelphia Eagles','eagles'],['Pittsburgh Steelers','steelers'],
+ ['San Francisco 49ers','49ers'],['Seattle Seahawks','seahawks'],['Tampa Bay Buccaneers','buccaneers'],
+ ['Tennessee Titans','titans'],['Washington Commanders','commanders']
+];
+
+// The first 30 entries above are NBA, the rest NFL \u2014 which makes the team name
+// a sport signal as well as a team signal.
+const IM_NBA_COUNT=30;
+function imLeagueOfTeam(full){
+  const i=IM_TEAMS.findIndex(t=>t[0]===full);
+  if(i<0) return '';
+  return i<IM_NBA_COUNT ? 'Basketball' : 'Football';
+}
+
+// Category from text that is already on the page. Four independent signals,
+// none of which needs an image:
+//   1. the sport word in the copyright line   ("MOSAIC BASKETBALL")
+//   2. league marks printed as TEXT           ("NBA Properties", "NFLPA")
+//   3. the stat table's column headers        (FG%/RPG/APG vs ATT/YDS/TD)
+//   4. the team, via its league
+// A logo is a fifth signal that costs template matching to read, and it tells
+// us nothing the first four don't already.
+const IM_LEAGUE_RX=[
+  [/\bNBA\b|national basketball|NBPA/i,'Basketball'],
+  [/\bNFL\b|NFLPA|national football/i,'Football'],
+  [/\bMLB\b|MLBPA|major league baseball/i,'Baseball'],
+  [/\bNHL\b|NHLPA|national hockey/i,'Hockey'],
+  [/\bMLS\b|major league soccer|\bFIFA\b|\bUEFA\b/i,'Soccer']
+];
+const IM_STATHDR=[
+  [/\bFG%|\bFT%|\bRPG\b|\bAPG\b|\bBLK\b|\bPPG\b|\b3PM\b/i,'Basketball'],
+  [/\bCMP%|\bYDS\b|\bRUSH\b|\bREC\b|\bINT\b|\bSACK/i,'Football'],
+  [/\bRBI\b|\bERA\b|\bOBP\b|\bSLG\b|\bHR\b\s|\bAVG\b.*\bAB\b/i,'Baseball'],
+  [/\bGAA\b|\bSV%|\bPIM\b|\bPTS\b.*\bAST\b.*\bGP\b/i,'Hockey']
+];
+
+// Returns {sport, votes} \u2014 votes is how many independent signals agreed.
+function imSportVote(setLineSport, backText, frontText, team){
+  const all=String(backText||'')+'\n'+String(frontText||'');
+  const votes={};
+  const add=(sp,w)=>{ if(sp) votes[sp]=(votes[sp]||0)+w; };
+
+  add(setLineSport, 2);                                   // the copyright line is the anchor
+  for(const [rx,sp] of IM_LEAGUE_RX) if(rx.test(all)){ add(sp,1); break; }
+  for(const [rx,sp] of IM_STATHDR)   if(rx.test(all)){ add(sp,1); break; }
+  if(team) add(imLeagueOfTeam(team), 1);
+
+  let best='', bv=0;
+  Object.keys(votes).forEach(k=>{ if(votes[k]>bv){ bv=votes[k]; best=k; } });
+  return { sport:best, votes:bv };
+}
+
+// Levenshtein, capped \u2014 only used on short strings and only when no token matches.
+function imLev(a,b){
+  const m=a.length, n=b.length;
+  if(Math.abs(m-n)>4) return 99;
+  let prev=Array.from({length:n+1},(_,j)=>j), cur=new Array(n+1);
+  for(let i=1;i<=m;i++){
+    cur[0]=i;
+    for(let j=1;j<=n;j++){
+      cur[j]=Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]===b[j-1]?0:1));
+    }
+    const t=prev; prev=cur; cur=t;
+  }
+  return prev[n];
+}
+
+function imTeamSnap(text){
+  const n=imNorm(text);
+  if(!n || n.length<3) return null;
+  for(const [full,nick] of IM_TEAMS){
+    const fn=imNorm(full);
+    if(n===fn || n===imNorm(nick)) return full;
+  }
+  // Contained either way: "COMMANDERS" inside "Washington Commanders", or an
+  // OCR read that picked up extra characters around the real name.
+  for(const [full,nick] of IM_TEAMS){
+    const fn=imNorm(full), nk=imNorm(nick);
+    if(n.indexOf(nk)>=0 || (n.length>5 && fn.indexOf(n)>=0)) return full;
+  }
+  // Last resort: nearest entry by edit distance. Check the full name too — a
+  // single-character slip ("TIMBERWOLYES") is far from the nickname but one
+  // edit from the full string.
+  let best=null, bd=99;
+  for(const [full,nick] of IM_TEAMS){
+    const d=Math.min(imLev(n, imNorm(full)), imLev(n, imNorm(nick)));
+    if(d<bd){ bd=d; best=full; }
+  }
+  return bd<=Math.max(2, Math.round(n.length*0.18)) ? best : null;
+}
+
+// ---------- find fields by how they look, not where we guessed ----------
+// Fixed crop fractions were tuned on a Mosaic back. A Prizm back puts the card
+// number top-LEFT, the name lower and left-aligned, and no team line at all \u2014
+// so the nameplate crop landed on the photo and returned "NETL" / "AET-S".
+//
+// Layout differs per product, but two things hold across all of them: the
+// player's name is the largest type on the back, and the card number is the
+// number that sits next to a "No." marker near the top. Both can be found from
+// the line boxes instead of assumed.
+
+const IM_NOTNAME=/\u00a9|copyright|rights reserved|panini|topps|prizm|mosaic|donruss|bowman|leaf|upper\s*deck|nfl|nba|mlb|nhl|totals|properties|association|america|certificate|authenticity|guaranteed|autograph|printed in/i;
+
+// "KELLY OUBRE JR." \u2014 the last token is a suffix, not the surname, and the bio
+// says "OUBRE JOINED THAT UNIT". Taking the last word would look for "JR." and
+// find nothing, losing the corroboration.
+const IM_SUFFIX=/^(JR|SR|II|III|IV|V)\.?$/i;
+function imSurname(name){
+  const w=String(name||'').trim().split(/\s+/).filter(Boolean);
+  for(let i=w.length-1;i>=0;i--){
+    const t=w[i].replace(/[^A-Za-z]/g,'');
+    if(t.length>1 && !IM_SUFFIX.test(w[i])) return t;
+  }
+  return '';
+}
+
+function imNameFromLines(lines, exclude){
+  if(!lines || !lines.length) return {player:'',team:''};
+  // Set branding is often the largest text on a premium back ("Flawless" in
+  // script). Exclude whatever the copyright line told us the set is called.
+  const bad=(exclude||[]).map(imNorm).filter(x=>x.length>2);
+  const isBrand=t=>{ const n=imNorm(t); return bad.some(b=>n===b||(n.length<24&&n.indexOf(b)>=0)); };
+
+  const cands=lines.filter(l=>{
+    const t=l.text;
+    if(t.length<3) return false;
+    const letters=(t.match(/[A-Za-z]/g)||[]).length;
+    const digits=(t.match(/\d/g)||[]).length;
+    if(letters<3) return false;
+    if(digits > letters*0.25) return false;          // stat rows
+    if(IM_NOTNAME.test(t) || isBrand(t)) return false;
+    if(imYear(t)) return false;
+    const words=t.split(/\s+/).filter(w=>w.replace(/[^A-Za-z]/g,'').length>1);
+    return words.length>=1 && words.length<=4;
+  });
+  if(!cands.length) return {player:'',team:''};
+
+  const byHeight=cands.slice().sort((a,b)=>b.h-a.h);
+  const player=byHeight[0];
+
+  // Names run onto two lines often, and the tallest line is not reliably the
+  // first one: "C.J." sits above MCCOLLUM, but "VICTOR" and "WEMBANYAMA" are the
+  // same size, so whichever wins on height may need its partner from EITHER
+  // side. A fragment is one word (or initials); a team line is two or more,
+  // which is what keeps "DETROIT PISTONS" out of the name.
+  const mergeable=l=>{
+    if(l===player) return false;
+    const t=l.text.trim();
+    if(/\d/.test(t) || IM_NOTNAME.test(t) || isBrand(t)) return false;
+    if(l.h > player.h*1.15 || l.h < player.h*0.6) return false;
+    const cl=(l.x0+(l.x1==null?l.x0:l.x1))/2, cp=(player.x0+(player.x1==null?player.x0:player.x1))/2;
+    if(Math.abs(l.x0-player.x0) > player.h*1.2 && Math.abs(cl-cp) > player.h*1.6) return false;
+    const words=t.split(/\s+/).filter(Boolean);
+    if(words.length>1) return false;                          // a team line, not a name part
+    return /^[A-Z](\.[A-Z])*\.?$/.test(t) || /^[A-Za-z][A-Za-z'\-]{1,13}$/.test(t);
+  };
+
+  let prefix='', suffix='';
+  lines.forEach(l=>{
+    if(!mergeable(l)) return;
+    const above=player.y0-l.y1, below=l.y0-player.y1;
+    if(above>=-player.h*0.4 && above<=player.h*0.7 && !prefix) prefix=l.text.trim();
+    else if(below>=-player.h*0.4 && below<=player.h*0.7 && !suffix) suffix=l.text.trim();
+  });
+
+  const full=(prefix?prefix+' ':'')+player.text+(suffix?' '+suffix:'');
+
+  let team=null, bestGap=1e9;
+  const used=imNorm(full);
+  cands.forEach(l=>{
+    if(l===player) return;
+    if(imNorm(l.text) && used.indexOf(imNorm(l.text))>=0) return;   // already part of the name
+    const gap=l.y0-player.y1;
+    if(gap>=-player.h*0.3 && gap<player.h*1.6 && l.h<=player.h*1.05 && gap<bestGap){
+      bestGap=gap; team=l;
+    }
+  });
+  const clean=t=>String(t||'').replace(/[^A-Za-z0-9'\.\- ]/g,' ').replace(/\s+/g,' ').trim();
+  return { player: clean(full), team: team ? clean(team.text) : '' };
+}
+
+function imTeamFromLines(lines, player){
+  if(!lines || !lines.length || !player) return '';
+  const pn=imNorm(player);
+  if(!pn) return '';
+
+  let anchorLine=null;
+  lines.forEach(l=>{
+    const n=imNorm(l.text);
+    if(!n) return;
+    if(n===pn || (n.length>3 && (pn.indexOf(n)>=0 || n.indexOf(pn)>=0))){
+      if(!anchorLine || l.h>anchorLine.h) anchorLine=l;
+    }
+  });
+  if(!anchorLine) return '';
+
+  let best=null, bestGap=1e9;
+  lines.forEach(l=>{
+    if(l===anchorLine) return;
+    const t=l.text;
+    const letters=(t.match(/[A-Za-z]/g)||[]).length;
+    if(letters<4) return;
+    if((t.match(/\d/g)||[]).length > letters*0.25) return;
+    if(IM_NOTNAME.test(t)) return;
+    const n=imNorm(t);
+    if(n===pn || pn.indexOf(n)>=0 || n.indexOf(pn)>=0) return;   // the name again
+    const words=t.split(/\s+/).filter(w=>w.replace(/[^A-Za-z]/g,'').length>1);
+    if(!words.length || words.length>4) return;
+    // Vertical distance either side of the name, normalised by its height.
+    const gap = l.y0>anchorLine.y1 ? (l.y0-anchorLine.y1) : (anchorLine.y0-l.y1);
+    if(gap < -anchorLine.h*0.5 || gap > anchorLine.h*2.2) return;
+    if(gap<bestGap){ bestGap=gap; best=l; }
+  });
+  return best ? best.text.replace(/[^A-Za-z0-9'\.\- ]/g,' ').replace(/\s+/g,' ').trim() : '';
+}
+
+function imCardNoFromLines(lines){
+  if(!lines || !lines.length) return '';
+
+  // Bio copy quotes card-number-shaped text: Wembanyama's back says "The No. 1
+  // pick in 2023". A marker embedded in a sentence is prose, not a label \u2014 a
+  // real card number sits alone or nearly alone on its line, near the top.
+  const top = lines.reduce((m,l)=>Math.min(m,l.y0), Infinity);
+  const bot = lines.reduce((m,l)=>Math.max(m,l.y1), -Infinity);
+  const span = Math.max(1, bot-top);
+  const isProse = l => l.text.trim().split(/\s+/).filter(Boolean).length > 4;
+  const depth = l => (l.y0-top)/span;
+
+  const hits=[];
+  lines.forEach(l=>{
+    if(isProse(l)) return;
+    let m=l.text.match(IM_CARDNO_RX) || imFixDigits(l.text).match(IM_CARDNO_RX);
+    if(m) hits.push({y0:l.y0, d:depth(l), no:m[1].toUpperCase()});
+  });
+
+  // "No." alone on its line with the number beneath or beside it (Prizm).
+  lines.forEach(l=>{
+    if(!/^N[o0O]\s*[\.\u00b0]?$/i.test(l.text.trim())) return;
+    let near=null, bestD=1e9;
+    lines.forEach(o=>{
+      if(o===l || isProse(o)) return;
+      const m=o.text.trim().match(/^([A-Z]{1,5}-[A-Z0-9]{1,6}|\d{1,4}[A-Z]?)$/);
+      if(!m) return;
+      const dy=Math.abs(o.y0-l.y1), dx=Math.abs(o.x0-l.x0);
+      const d=dy+dx*0.5;
+      if(dy<=l.h*2.2 && dx<=l.h*4 && d<bestD){ bestD=d; near=m[1]; }
+    });
+    if(near) hits.push({y0:l.y0, d:depth(l), no:near.toUpperCase()});
+  });
+
+  if(!hits.length) return '';
+  // Prefer the top third of the card; only look lower if nothing is up there.
+  const high=hits.filter(h=>h.d<=0.35);
+  const pool=high.length?high:hits;
+  pool.sort((a,b)=>a.y0-b.y0);
+  return pool[0].no.replace(/^0+(?=\d)/,'');
 }
 
 function imParseNameplate(text){
@@ -3167,6 +3500,32 @@ function imParseNameplate(text){
   const caps=lines.filter(l=>l===l.toUpperCase());
   const pool=caps.length?caps:lines;
   return { player: pool[0]||'', team: pool[1]||'' };
+}
+
+// Cheap junk filter. Real insert names are short runs of pronounceable words;
+// OCR noise off foil is fragments like "hadig Ler. Sid" \u2014 stray short tokens,
+// odd punctuation, and consonant clusters with no vowel.
+function imLooksLikeWords(t){
+  const str=String(t||'').trim();
+  if(str.length<3) return false;
+  const words=str.split(/\s+/).filter(Boolean);
+  if(!words.length || words.length>5) return false;
+
+  let good=0;
+  for(let i=0;i<words.length;i++){
+    const w=words[i];
+    // imParseBanner title-cases its output, so a word starting lowercase never
+    // came from real banner lettering \u2014 it's a misread fragment ("hadig").
+    if(!/^[A-Z]/.test(w)) return false;
+    // A mid-string abbreviation dot is an OCR artefact, not an insert name
+    // ("Ler. Sid"). Real names don't abbreviate mid-phrase.
+    if(i<words.length-1 && /\.$/.test(w)) return false;
+    const letters=w.replace(/[^A-Za-z]/g,'');
+    if(letters.length<2) continue;
+    if(!/[aeiouy]/i.test(letters)) continue;      // needs a vowel to be a word
+    if(letters.length>=3) good++;
+  }
+  return good>=1 && good >= Math.ceil(words.length*0.6);
 }
 
 const IM_STOP=/^(PANINI|TOPPS|PRIZM|MOSAIC|NBA|NFL|MLB|NHL|RC|ROOKIE|CARD|THE|AND|OF)$/i;
@@ -3408,6 +3767,7 @@ async function imRun(){
   if(IM.busy) return;
   if(!IM.front && !IM.back && !IM.label){ toast('Drop a card image first'); return; }
   IM.busy=true; IM.crops=[]; IM.chosen=-1; IM.poke=false;
+  IM.nameConflict=null; IM.nameAgree=false;
   IM.sample = IM.stub ? (IM.mode==='label'?'Label':'Card') : false;
   $('imGo').disabled=true;
   const t0=performance.now();
@@ -3427,8 +3787,10 @@ async function imRun(){
     const res={};
 
     if(IM.stub){
-      backAll  = IM.back  ? (await imReadSmart(IM.back, '11','',null,'back \u2014 whole',{whole:true})).text  : '';
-      frontAll = IM.front ? (await imReadSmart(IM.front,'11','',null,'front \u2014 whole',{whole:true})).text : '';
+      const rb0 = IM.back ? await imReadSmart(IM.back,'11','',null,'back \u2014 whole',{whole:true}) : null;
+      backAll = rb0 ? rb0.text : ''; IM.backLinesSrc = rb0 ? rb0.lines : [];
+      const rf0 = IM.front ? await imReadSmart(IM.front,'11','',null,'front \u2014 whole',{whole:true}) : null;
+      frontAll = rf0 ? rf0.text : ''; IM.frontLinesSrc = rf0 ? rf0.lines : [];
     } else if(IM.front && IM.back){
       imProg('Identifying front and back\u2026',12);
       const [a,b]=await Promise.all([
@@ -3447,18 +3809,22 @@ async function imRun(){
       }
       if(swap){
         const t=IM.front; IM.front=IM.back; IM.back=t;
-        backAll=a.text; frontAll=b.text;
+        backAll=a.text; frontAll=b.text; IM.backLinesSrc=a.lines; IM.frontLinesSrc=b.lines;
         IM.shots=[['Front',IM.front],['Back',IM.back]];
       } else {
-        backAll=b.text; frontAll=a.text;
+        backAll=b.text; frontAll=a.text; IM.backLinesSrc=b.lines; IM.frontLinesSrc=a.lines;
       }
       if(IM.poke){ const t=backAll; backAll=frontAll; frontAll=t; }
     } else if(IM.back){
-      backAll=(await imReadSmart(IM.back,'6','',null,'back \u2014 whole')).text;
+      const rb1 = await imReadSmart(IM.back,'11','',null,'back \u2014 whole',{whole:true});
+      backAll=rb1.text; IM.backLinesSrc=rb1.lines;
     } else if(IM.front){
-      frontAll=(await imReadSmart(IM.front,'11','',null,'front \u2014 whole',{whole:true})).text;
+      const rf1=await imReadSmart(IM.front,'11','',null,'front \u2014 whole',{whole:true});
+      frontAll=rf1.text; IM.frontLinesSrc=rf1.lines;
     }
     IM.raw.backwhole=backAll; IM.raw.frontwhole=frontAll;
+    IM.backLines = IM.backLinesSrc || [];
+    IM.frontLines = IM.frontLinesSrc || [];
 
     // PASS 2 \u2014 targeted crops, now that we know which panel is which. These
     // refine what the whole-panel read already gives; where a crop fails, the
@@ -3477,14 +3843,31 @@ async function imRun(){
                   t=>/(19|20)\d{2}/.test(t)&&/[A-Za-z]{4}/.test(t),'set line',
                   {targetW:3000, maxPx:3.5e6, scaleMax:8, gray:true})]);
       jobs.push(['no',  imReadSmart(imFromRegion(B,.38,.022,.28,.070),'7','',
-                  t=>/\d{2,4}/.test(imFixDigits(t)),'card no.',{gray:true})]);
-      jobs.push(['ser', imReadSmart(imFromRegion(B,.62,.010,.36,.084),'7','0123456789/',
-                  t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial',{gray:true})]);
+                  t=>/\d{2,4}/.test(imFixDigits(t)),'card no.',{gray:true, thicken:true})]);
+      jobs.push(['ser', imReadSmart(imFromRegion(B,.655,.018,.30,.062),'7','0123456789/',
+                  t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial',
+                  {gray:true, thicken:true, targetW:2200, maxPx:2.5e6, scaleMax:8})]);
       jobs.push(['np',  imReadSmart(imFromRegion(B,.20,.438,.70,.084),'6','',null,'nameplate')]);
+      // Vertical serial on the right edge, tried both rotations since the text
+      // may read bottom-up or top-down depending on the product.
+      jobs.push(['serR', imReadSmart(imRotate(imFromRegion(B,.86,.04,.14,.42),-90),'7','0123456789/',
+                  t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial \u00b7 rotated',
+                  {gray:true, thicken:true, targetW:2200, maxPx:2.5e6, scaleMax:8})]);
+      jobs.push(['serR2',imReadSmart(imRotate(imFromRegion(B,.86,.04,.14,.42),90),'7','0123456789/',
+                  t=>/\d{1,5}\s*\/\s*\d{1,5}/.test(imFixDigits(t)),'serial \u00b7 rotated cw',
+                  {gray:true, thicken:true, targetW:2200, maxPx:2.5e6, scaleMax:8})]);
     }
     if(IM.front && !IM.poke){
       const F=IM.front;
       jobs.push(['ban', imReadSmart(imFromRegion(F,.06,.76,.88,.20),'6','',null,'front banner')]);
+      // Premium and insert fronts run text up the edges: Immaculate puts 24/75
+      // on the left, Flawless 14/25 on the right, Phoenix sets the player name
+      // AND the insert name vertically on opposite sides. Read both edges both
+      // ways round \u2014 general text, not just digits, so names come through too.
+      jobs.push(['edgeL', imReadSmart(imRotate(imFromRegion(F,0,.05,.13,.90),-90),'6','',null,
+                  'front edge \u00b7 left',{gray:true, targetW:2600, maxPx:3e6, scaleMax:8})]);
+      jobs.push(['edgeR', imReadSmart(imRotate(imFromRegion(F,.87,.05,.13,.90),90),'6','',null,
+                  'front edge \u00b7 right',{gray:true, targetW:2600, maxPx:3e6, scaleMax:8})]);
       // The rookie shield is a small logo carrying ~8px lettering. The old crop
       // DID contain it — the problem was zoom: targetW 1250 across a 627px-wide
       // strip caps the scale at 2x, so "ROOKIE" arrived at 16px and Tesseract
@@ -3501,7 +3884,7 @@ async function imRun(){
       res[k]=await p; done++;
       imProg('Read '+done+'/'+jobs.length+' regions',30+Math.round(46*done/jobs.length));
     }));
-    ['set','no','ser','np','ban','rc','pkname','pkfoot'].forEach(k=>{ if(!res[k]) res[k]={text:'',conf:0}; });
+    ['set','no','ser','serR','serR2','np','ban','rc','edgeL','edgeR','pkname','pkfoot'].forEach(k=>{ if(!res[k]) res[k]={text:'',conf:0}; });
     imProg('Parsing\u2026',80);
 
     if(IM.poke){
@@ -3541,18 +3924,16 @@ async function imRun(){
       conf.set = parsed.year&&parsed.set ? 'hi' : (parsed.year?'mid':'lo');
 
       Object.assign(f,{year:parsed.year,brand:parsed.brand,set:parsed.set,sport:parsed.sport});
-      // Sport is worth recovering on its own: it's a hard filter on the registry
-      // and the word appears somewhere on almost every back even when the set
-      // line itself reads badly ("MOSAIC DASKETRALL").
-      if(!f.sport){
-        for(const k of Object.keys(SPORT_WORDS)){
-          if(new RegExp('\\b'+k+'\\b','i').test(backAll)){ f.sport=SPORT_WORDS[k]; break; }
-        }
-      }
+      // Sport is a hard filter on the registry, so it's worth voting on rather
+      // than trusting one mangled word. Deferred until after the team is
+      // resolved, since the team is one of the voters.
       conf.year  = f.year  ? conf.set : 'none';
       conf.brand = f.brand ? conf.set : 'none';
-      conf.sport = f.sport ? (parsed.sport?'hi':'mid') : 'none';
-      f.parallel_marker = /\bPRIZM\b/i.test(res.set.text+' '+backAll);
+      // A PRIZM wordmark means "parallel" on Mosaic, but on a Prizm-branded
+      // product it's just the brand and every base card carries it. Only treat
+      // it as a marker when it isn't the set we already identified.
+      f.parallel_marker = /\bPRIZM\b/i.test(res.set.text+' '+backAll)
+                          && !/prizm/i.test(String(f.set)+' '+String(f.brand));
 
       IM.raw.cardno=res.no.text;
       // The crop used to be trusted whenever it returned anything at all, so a
@@ -3560,7 +3941,10 @@ async function imRun(){
       // the whole-panel fallback never ran — with "No. 262" sitting right there
       // in the back text. A one-character answer is not an answer.
       const anchored = t => {
-        const m=String(t||'').match(/\b[NMW][o0O]?\s*[\.\u00b0]?\s*(\d{1,4})\b/i);
+        const str=String(t||'');
+        let m=str.match(/\b[NMW][o0O]?\s*[\.\u00b0]?\s*([A-Z]{1,5}-[A-Z0-9]{1,6})\b/);
+        if(m) return m[1].toUpperCase();
+        m=str.match(/\b[NMW][o0O]?\s*[\.\u00b0]?\s*(\d{1,4})\b/i);
         return m ? m[1].replace(/^0+(?=\d)/,'') : '';
       };
       // Two digits was still too weak a test: a crop reading "52" out of noise
@@ -3570,15 +3954,22 @@ async function imRun(){
       const cropNo   = imCardNo(res.no.text);
       const cropAnch = anchored(res.no.text);
       const backAnch = anchored(backAll);
+      // Card number has no second witness anywhere on the card — no dictionary,
+      // no registry, no duplicate print. Agreement between the crop and the
+      // whole-panel read is the only corroboration available, so a lone clean
+      // read is MED, not HIGH. It was overstating what it knew.
       if(cropAnch && backAnch && cropAnch===backAnch){ f.card_no=cropAnch; conf.card_no='hi'; }
-      else if(cropAnch && !backAnch){ f.card_no=cropAnch; conf.card_no='hi'; }
+      else if(cropAnch && !backAnch){ f.card_no=cropAnch; conf.card_no='mid'; }
       else if(backAnch && cropNo===backAnch){ f.card_no=backAnch; conf.card_no='hi'; }
       else if(backAnch){ f.card_no=backAnch; conf.card_no='mid'; }
       else if(cropAnch){ f.card_no=cropAnch; conf.card_no='mid'; }
-      else if(cropNo.length>=2){ f.card_no=cropNo; conf.card_no='lo'; }
       else {
-        const loose=imFixDigits(res.no.text).match(/\b(\d{2,4})\b/);
-        if(loose){ f.card_no=loose[1].replace(/^0+(?=\d)/,''); conf.card_no='lo'; }
+        // The "No." marker anywhere on the back, whatever its position. There
+        // is deliberately no bare-digit fallback below this: an unanchored
+        // number on a card back is as likely to be a jersey number or a stat
+        // as the card number, and a plausible wrong value is worse than none.
+        const byLineNo=imCardNoFromLines(IM.backLines);
+        if(byLineNo){ f.card_no=byLineNo; conf.card_no='mid'; }
       }
 
       IM.raw.serial=res.ser.text;
@@ -3593,29 +3984,124 @@ async function imRun(){
         return imPlausibleRun(a,b) ? {s:m[1]+'/'+m[2], total:m[2]} : null;
       };
       const sCrop=ser(res.ser.text), sBack=ser(backAll);
+      const sRot = ser(res.serR.text) || ser(res.serR2.text)
+                || ser(res.edgeL.text) || ser(res.edgeR.text);   // front edges too
       let pick=null, serLvl='none';
       if(sCrop && sBack && sCrop.s===sBack.s){ pick=sCrop; serLvl='hi'; }
+      else if(sRot && sBack && sRot.s===sBack.s){ pick=sRot; serLvl='hi'; }
       else if(sBack){ pick=sBack; serLvl='mid'; }
       else if(sCrop){ pick=sCrop; serLvl='mid'; }
+      else if(sRot){ pick=sRot; serLvl='mid'; }   // vertical edge print
       if(pick){ f.serial=pick.s; f.parallel_total=pick.total; }
       conf.parallel_total=serLvl;
 
       IM.raw.nameplate=res.np.text;
-      let np=imParseNameplate(res.np.text);
-      if(!np.player) np=imParseNameplate(backAll);
-      f.player=np.player; f.team=np.team;
-      conf.player=f.player?'hi':'lo';
-      conf.team=f.team?conf.player:'none';
+      // Two independent readers of the same physical text: the line-geometry
+      // finder across the whole back, and the targeted nameplate crop. When
+      // they agree the name is corroborated. When they produce genuinely
+      // DIFFERENT names, neither is trustworthy \u2014 script faces like Recon's
+      // "Stephen Curry" mangle differently on each pass \u2014 so the field is left
+      // empty rather than picking a winner.
+      const byLine=imNameFromLines(IM.backLines, [f.set, f.brand, parsed.set, parsed.brand]);
+      const byCrop=imParseNameplate(res.np.text);
+      const nA=imNorm(byLine.player), nB=imNorm(byCrop.player);
+
+      let chosen='', agree=false, conflict=false;
+      if(nA && nB){
+        // A couple of characters apart is the same read with OCR noise; take the
+        // longer one. Further apart than that is a disagreement, not noise.
+        if(imLev(nA,nB) <= Math.max(2, Math.round(Math.max(nA.length,nB.length)*0.15))){
+          agree=true;
+          chosen = byLine.player.length>=byCrop.player.length ? byLine.player : byCrop.player;
+        } else {
+          // The two readers are NOT equally reliable. The crop is position-based,
+          // and crop positions don't generalise across products — on a card whose
+          // name sits lower than the crop expects, it lands on the team logo and
+          // would veto a perfectly good geometry read. So let the bio break the
+          // tie: whichever surname the bio actually mentions is the real name.
+          const bio=imNorm(backAll);
+          const sA=imNorm(imSurname(byLine.player)), sB=imNorm(imSurname(byCrop.player));
+          const inA = sA.length>3 && bio.indexOf(sA)>=0;
+          const inB = sB.length>3 && bio.indexOf(sB)>=0;
+          if(inA && !inB){ chosen=byLine.player; agree=true; }
+          else if(inB && !inA){ chosen=byCrop.player; agree=true; }
+          else { conflict=true; IM.nameConflict=[byLine.player, byCrop.player]; }
+        }
+      } else {
+        chosen = byLine.player || byCrop.player || imParseNameplate(backAll).player || '';
+      }
+
+      f.player = conflict ? '' : chosen;
+      f.team   = conflict ? '' : (byLine.team || byCrop.team || '');
+      IM.nameAgree = agree;
+      conf.player = conflict ? 'none' : (f.player ? (agree?'hi':'mid') : 'none');
+      conf.team   = f.team ? conf.player : 'none';
+      IM.teamPending = !f.team;
     }
 
     if(IM.front && !IM.poke){
       IM.raw.banner=res.ban.text;
-      f.insert=imParseBanner(res.ban.text, f.player) || imParseBanner(frontAll, f.player);
-      conf.insert=f.insert?'mid':'lo';       // foil \u2014 never better than mid unaided
+      // The foil banner is the least reliable region on the card, and a wrong
+      // answer here is worse than none: "hadig Ler. Sid" looks like a real
+      // subset until you read it. Require the crop and the whole-front read to
+      // agree, or the text to at least look like words.
+      const banCrop  = imParseBanner(res.ban.text, f.player);
+      const banWhole = imParseBanner(frontAll, f.player);
+      if(banCrop && banWhole && imNorm(banCrop)===imNorm(banWhole)){
+        f.insert=banCrop; conf.insert='hi';
+      } else if(imLooksLikeWords(banCrop)){
+        f.insert=banCrop; conf.insert='mid';
+      } else if(imLooksLikeWords(banWhole)){
+        f.insert=banWhole; conf.insert='mid';
+      } else {
+        f.insert=''; conf.insert='none';     // junk is worse than blank
+      }
       if(!f.player){
         const np=imParseNameplate(res.ban.text);
         f.player=np.player; f.team=np.team||f.team;
         conf.player='lo';
+      }
+      // ---- team: snap to the closed vocabulary, from whichever side has it ----
+      const teamCands=[];
+      if(f.team) teamCands.push(f.team);
+      if(f.player){
+        const src=(res.ban && res.ban.lines && res.ban.lines.length) ? res.ban.lines : IM.frontLines;
+        const t=imTeamFromLines(src, f.player);
+        if(t) teamCands.push(t);
+      }
+      [res.ban.text, res.edgeL.text, res.edgeR.text].forEach(t=>{
+        String(t||'').split(/\n+/).forEach(l=>{ if(l.trim().length>3) teamCands.push(l.trim()); });
+      });
+      let snapped=null, snapSrc=-1;
+      teamCands.forEach((c,i)=>{ if(snapped) return; const sn=imTeamSnap(c); if(sn){ snapped=sn; snapSrc=i; } });
+      if(snapped){
+        // Two sources naming the same team is real corroboration.
+        const agree=teamCands.filter(c=>imTeamSnap(c)===snapped).length;
+        f.team=snapped;
+        conf.team = agree>=2 ? 'hi' : (snapSrc===0 ? 'hi' : 'mid');
+      } else if(!f.team){
+        conf.team='none';
+      }
+
+      // ---- category: vote across copyright word, league text, stat headers, team ----
+      const vote=imSportVote(parsed.sport, backAll, frontAll+' '+res.ban.text, f.team);
+      if(vote.sport){
+        f.sport=vote.sport;
+        conf.sport = vote.votes>=3 ? 'hi' : (vote.votes>=2 ? 'mid' : 'lo');
+      } else conf.sport='none';
+
+      // ---- player: count independent witnesses ----
+      // The back nameplate, the bio paragraph and the front nameplate fail in
+      // different ways, so agreement between any two is worth far more than one
+      // clean-looking read. This is what catches a silent "THOMPS0N".
+      if(f.player){
+        const sn=imNorm(imSurname(f.player));
+        let witnesses=IM.nameAgree?2:1;
+        if(sn.length>3 && imNorm(backAll).indexOf(sn)>=0) witnesses++;      // named in the bio
+        const frontTxt=imNorm(frontAll+' '+res.ban.text+' '+res.edgeL.text+' '+res.edgeR.text);
+        if(sn.length>3 && frontTxt.indexOf(sn)>=0) witnesses++;             // printed on the front
+        IM.playerWitnesses=witnesses;
+        conf.player = witnesses>=2 ? 'hi' : 'mid';
       }
       const rcText=(res.rc?res.rc.text:'')+' '+res.ban.text+' '+frontAll;
       // "ROOKIE" or "CARD" spelled out is solid; a bare "RC" is two characters
@@ -3626,6 +4112,11 @@ async function imRun(){
       f.colour = IM.stub ? (IM.stubColour||null) : imBorderColour(IM.front);
       conf.colour=f.colour?'hi':'none';
     }
+
+    // Nothing uncertain reaches the panel. A LOW read is a guess, and a guess
+    // that looks like an answer is worse than a blank a person will fill in.
+    // The raw text stays in "Regions read" so the attempt is still inspectable.
+    imSuppressLow(f, conf);
 
     imProg('Matching the registry\u2026',92);
 
@@ -3643,6 +4134,15 @@ async function imRun(){
     IM.cands=imMatchSets(f);
 
     // A set picked by hand for this same signature wins over the score.
+    // A high-scoring row that disagrees with the year or sport we read off the
+    // same copyright line is a bad match, not a confident one.
+    if(IM.cands.length){
+      const top=IM.cands[0];
+      const yearOk  = !f.year  || !top.year  || imNorm(top.year).indexOf(imNorm(f.year).slice(0,4))>=0;
+      const sportOk = !f.sport || !top.__sport || imNorm(top.__sport)===imNorm(f.sport);
+      IM.setAgrees = yearOk && sportOk;
+    }
+
     const sig=imlSetSig(f, IM.src);
     const remembered = sig ? IML.sets[sig] : null;
     if(remembered){
@@ -3774,6 +4274,8 @@ function imTestLabel(){
 /* ---------- render ---------- */
 
 const IM_PILL={hi:'HIGH',mid:'MED',lo:'LOW',vault:'VAULT',learn:'LEARNED',none:'\u2014'};
+// LOW should never reach the panel now \u2014 imSuppressLow clears those fields before
+// render. It stays in the map only so a stray one is visible rather than hidden.
 function imConfPill(k, level){
   const c = level || (IM.conf&&IM.conf[k]) || 'none';
   return '<span class="conf '+c+'">'+(IM_PILL[c]||'\u2014')+'</span>';
@@ -3906,7 +4408,7 @@ function imIdRows(){
   const setName = sel ? imSetLabel(sel)
                       : (v.set_name || [f.brand,f.set].filter(Boolean).join(' '));
   // A value typed by hand outranks both the registry pick and the vault.
-  const setId    = f.set_id    || (sel && sel.set_id) || v.set_id || '';
+  let setId      = f.set_id    || (sel && sel.set_id) || v.set_id || '';
   const insertId = f.insert_id || v.insert_id || '';   // card-derived wins
   const subsetId = f.subset_id || v.subset_id || '';
   // A vault parallel is only meaningful if the lookup was pinned to this copy.
@@ -3915,9 +4417,14 @@ function imIdRows(){
   const vaultParallel = IM.vaultPinned ? (v.parallel||'') : '';
   const parallel = f.parallel || vaultParallel || '';
 
-  const setIdLvl = setId
+  let setIdLvl = setId
     ? (f.set_id ? 'hi' : (sel ? (sel.__score>=.85?'hi':(sel.__score>=.70?'mid':'lo')) : 'vault'))
     : 'none';
+  // Downgrade a strong-looking match that contradicts the year or sport.
+  if(setIdLvl==='hi' && !f.set_id && IM.setAgrees===false) setIdLvl='mid';
+  // And a weak match is no match: show nothing rather than a Set ID that is
+  // probably the wrong set. The candidate list below still offers it.
+  if(setIdLvl==='lo' && !f.set_id){ setId=''; setIdLvl='none'; }
 
   return imField('sport','Category',f.sport,true) +
     (f.set_code||f.set_total
@@ -3935,6 +4442,26 @@ function imIdRows(){
             subsetId?(f.subset_id?'hi':'vault'):'none', subsetId?'vaulted':'') +
     imField('parallel','Parallel',parallel,true,false,
             parallel?(f.parallel?'hi':'vault'):'none');
+}
+
+// Clear any field that only reached LOW, and record what was dropped so the
+// panel can say so rather than silently showing fewer fields.
+const IM_CLEARABLE=['year','brand','set','sport','player','team','card_no','insert',
+                    'parallel','parallel_total','set_code','insert_id','subset_id','set_id'];
+function imSuppressLow(f, conf){
+  IM.suppressed=[];
+  if(IM.nameConflict && IM.nameConflict.length===2){
+    IM.suppressed.push({key:'player', was:IM.nameConflict[0]+'  vs  '+IM.nameConflict[1]});
+  }
+  IM_CLEARABLE.forEach(k=>{
+    if(conf[k]==='lo' && f[k]){
+      IM.suppressed.push({key:k, was:String(f[k])});
+      f[k]='';
+      conf[k]='none';
+    }
+  });
+  if(conf.rookie==='lo'){ f.rookie=false; conf.rookie='none'; }
+  if(conf.colour==='lo'){ f.colour=null; conf.colour='none'; }
 }
 
 function imRender(){
@@ -3979,6 +4506,15 @@ function imRender(){
     '<div class="impanel" style="margin-top:18px">'+
       '<div class="imsec"><span class="label">Set ID candidates \u2014 registry scored against the card</span>'+
         '<div id="imCands" class="imcands">'+imCandsHtml()+'</div></div>'+
+
+      ((IM.suppressed&&IM.suppressed.length)
+        ? '<div class="imsec"><span class="label">Left blank \u2014 not confident enough</span>'+
+          '<div class="fv muted" style="font-size:12.5px;line-height:1.75">'+
+          IM.suppressed.map(x=>'<b style="color:#8a9a92">'+esc(x.key.replace(/_/g,' '))+'</b> \u2014 read as '+
+            '<span class="mono" style="color:#5d6e65">'+esc(x.was)+'</span>').join('<br>')+
+          '<br><br>These reads were too weak to trust, so the fields are empty rather than wrong. '+
+          'Type the right value in and it will be remembered.</div></div>'
+        : '')+
 
       '<div class="imsec"><span class="label">Learned corrections</span>'+
         '<div class="fv muted" style="font-size:12.5px;line-height:1.7">'+
