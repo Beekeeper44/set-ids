@@ -1,0 +1,401 @@
+Lionel Messi
+Cristiano Ronaldo
+Kylian Mbappe
+Erling Haaland
+Jude Bellingham
+Vinicius Junior
+Rodrygo
+Kevin De Bruyne
+Mohamed Salah
+Harry Kane
+Bukayo Saka
+Phil Foden
+Declan Rice
+Martin Odegaard
+Bruno Fernandes
+Marcus Rashford
+Kobbie Mainoo
+Alejandro Garnacho
+Lamine Yamal
+Pedri
+Gavi
+Robert Lewandowski
+Raphinha
+Frenkie de Jong
+Antoine Griezmann
+Jamal Musiala
+Florian Wirtz
+Leroy Sane
+Joshua Kimmich
+Thomas Muller
+Manuel Neuer
+Kai Havertz
+Ilkay Gundogan
+Toni Kroos
+Luka Modric
+Federico Valverde
+Aurelien Tchouameni
+Eduardo Camavinga
+Thibaut Courtois
+Antonio Rudiger
+Virgil van Dijk
+Trent Alexander-Arnold
+Alisson Becker
+Darwin Nunez
+Luis Diaz
+Cody Gakpo
+Alexis Mac Allister
+Dominik Szoboszlai
+Ryan Gravenberch
+Son Heung-min
+James Maddison
+Cole Palmer
+Enzo Fernandez
+Moises Caicedo
+Nicolas Jackson
+Reece James
+Raheem Sterling
+Ollie Watkins
+Emiliano Martinez
+Alexander Isak
+Anthony Gordon
+Bruno Guimaraes
+Rodri
+Bernardo Silva
+Jack Grealish
+Ruben Dias
+Josko Gvardiol
+Ederson
+Julian Alvarez
+Lautaro Martinez
+Nicolo Barella
+Hakan Calhanoglu
+Victor Osimhen
+Khvicha Kvaratskhelia
+Rafael Leao
+Theo Hernandez
+Dusan Vlahovic
+Federico Chiesa
+Paulo Dybala
+Romelu Lukaku
+Ousmane Dembele
+Achraf Hakimi
+Gianluigi Donnarumma
+Marquinhos
+Neymar
+Karim Benzema
+N'Golo Kante
+Paul Pogba
+Riyad Mahrez
+Sadio Mane
+Bradley Barcola
+Warren Zaire-Emery
+Joao Neves
+Vitinha
+Viktor Gyokeres
+Xavi Simons
+Christian Pulisic
+Weston McKennie
+Tyler Adams
+Gio Reyna
+Timothy Weah
+Sergino Dest
+Folarin Balogun
+Ricardo Pepi
+Antonee Robinson
+Matt Turner
+Yunus Musah
+Brenden Aaronson
+Josh Sargent
+Clint Dempsey
+Landon Donovan
+Tim Howard
+Michael Bradley
+Jozy Altidore
+DeAndre Yedlin
+Alex Morgan
+Megan Rapinoe
+Mia Hamm
+Abby Wambach
+Carli Lloyd
+Sophia Smith
+Trinity Rodman
+Mallory Swanson
+Lindsey Horan
+Rose Lavelle
+Naomi Girma
+Alexia Putellas
+Aitana Bonmati
+Sam Kerr
+Ada Hegerberg
+Marta
+Pele
+Diego Maradona
+Johan Cruyff
+Franz Beckenbauer
+Zinedine Zidane
+Ronaldo Nazario
+Ronaldinho
+Kaka
+Thierry Henry
+David Beckham
+Wayne Rooney
+Steven Gerrard
+Frank Lampard
+Paul Scholes
+Ryan Giggs
+Eric Cantona
+Alan Shearer
+Michael Owen
+Gary Lineker
+Bobby Charlton
+George Best
+Bobby Moore
+Kenny Dalglish
+Ian Rush
+Dennis Bergkamp
+Patrick Vieira
+Robert Pires
+Cesc Fabregas
+Xavi Hernandez
+Andres Iniesta
+Carles Puyol
+Gerard Pique
+Sergio Ramos
+Iker Casillas
+Raul Gonzalez
+Fernando Torres
+David Villa
+Xabi Alonso
+Sergio Busquets
+Jordi Alba
+Luis Suarez
+Edinson Cavani
+Diego Forlan
+Zlatan Ibrahimovic
+Andrea Pirlo
+Paolo Maldini
+Franco Baresi
+Alessandro Del Piero
+Francesco Totti
+Roberto Baggio
+Gianluigi Buffon
+Fabio Cannavaro
+Alessandro Nesta
+Andriy Shevchenko
+Marco van Basten
+Ruud Gullit
+Frank Rijkaard
+Ruud van Nistelrooy
+Robin van Persie
+Arjen Robben
+Wesley Sneijder
+Michael Laudrup
+Peter Schmeichel
+Oliver Kahn
+Michael Ballack
+Miroslav Klose
+Lothar Matthaus
+Gerd Muller
+Jurgen Klinsmann
+Philipp Lahm
+Bastian Schweinsteiger
+Mesut Ozil
+Marco Reus
+Mats Hummels
+Ivan Rakitic
+Mario Mandzukic
+Didier Drogba
+Samuel Eto'o
+Yaya Toure
+Michael Essien
+George Weah
+Jay-Jay Okocha
+Hristo Stoichkov
+Luis Figo
+Rui Costa
+Eusebio
+Alfredo Di Stefano
+Ferenc Puskas
+Lev Yashin
+Michel Platini
+Just Fontaine
+Garrincha
+Zico
+Socrates
+Romario
+Rivaldo
+Cafu
+Roberto Carlos
+Dani Alves
+Thiago Silva
+Casemiro
+Fabinho
+Gabriel Jesus
+Richarlison
+Gabriel Martinelli
+Raphael Varane
+Hugo Lloris
+Olivier Giroud
+William Saliba
+Gabriel Magalhaes
+Ben White
+Aaron Ramsdale
+David Raya
+Leandro Trossard
+Kai Havertz
+Mikel Merino
+Riccardo Calafiori
+Jurrien Timber
+Oleksandr Zinchenko
+Thomas Partey
+Jorginho
+Emile Smith Rowe
+Eddie Nketiah
+Mason Mount
+Casemiro
+Andre Onana
+Lisandro Martinez
+Harry Maguire
+Rasmus Hojlund
+Joshua Zirkzee
+Amad Diallo
+Luke Shaw
+Diogo Dalot
+Jadon Sancho
+Antony
+Mason Greenwood
+Scott McTominay
+Jarrod Bowen
+Mohammed Kudus
+Lucas Paqueta
+Eberechi Eze
+Michael Olise
+Marc Guehi
+Jordan Pickford
+Dominic Calvert-Lewin
+Jarrad Branthwaite
+Morgan Gibbs-White
+Chris Wood
+Bryan Mbeumo
+Yoane Wissa
+Matheus Cunha
+Pedro Neto
+Joao Palhinha
+Aleksandar Mitrovic
+Richarlison
+Dejan Kulusevski
+Micky van de Ven
+Cristian Romero
+Guglielmo Vicario
+Pedro Porro
+Destiny Udogie
+Dominic Solanke
+Brennan Johnson
+Kaoru Mitoma
+Evan Ferguson
+Joao Pedro
+Takefusa Kubo
+Takumi Minamino
+Wataru Endo
+Kaoru Mitoma
+Hidetoshi Nakata
+Shinji Kagawa
+Park Ji-sung
+Kim Min-jae
+Lee Kang-in
+Hirving Lozano
+Raul Jimenez
+Santiago Gimenez
+Edson Alvarez
+Guillermo Ochoa
+Javier Hernandez
+Rafael Marquez
+Carlos Vela
+Alphonso Davies
+Jonathan David
+Cyle Larin
+Lorenzo Insigne
+Federico Bernardeschi
+Lucas Zelarayan
+Thiago Almada
+Luciano Acosta
+Cucho Hernandez
+Denis Bouanga
+Sebastian Driussi
+Riqui Puig
+Hany Mukhtar
+Josef Martinez
+Gareth Bale
+Carlos Tevez
+Sergio Aguero
+Angel Di Maria
+Javier Mascherano
+Gonzalo Higuain
+Juan Roman Riquelme
+Gabriel Batistuta
+Hernan Crespo
+Alexis Sanchez
+Arturo Vidal
+Radamel Falcao
+James Rodriguez
+Carlos Valderrama
+Jhon Duran
+Rodrigo De Paul
+Nicolas Otamendi
+Alexis Mac Allister
+Leandro Paredes
+Giovani Lo Celso
+Paulo Dybala
+Emiliano Buendia
+Nicolas Tagliafico
+Cristian Romero
+Achraf Hakimi
+Hakim Ziyech
+Yassine Bounou
+Sofyan Amrabat
+Youssef En-Nesyri
+Mohamed Elneny
+Omar Marmoush
+Victor Boniface
+Ademola Lookman
+Wilfred Ndidi
+Kelechi Iheanacho
+Serhou Guirassy
+Jeremie Frimpong
+Granit Xhaka
+Alejandro Grimaldo
+Jonathan Tah
+Piero Hincapie
+Patrik Schick
+Benjamin Sesko
+Lois Openda
+Dani Olmo
+Nico Williams
+Inaki Williams
+Mikel Oyarzabal
+Alvaro Morata
+Rodri Hernandez
+Fermin Lopez
+Pau Cubarsi
+Marc-Andre ter Stegen
+Ronald Araujo
+Jules Kounde
+Alejandro Balde
+Dani Carvajal
+Ferland Mendy
+Eder Militao
+David Alaba
+Endrick
+Arda Guler
+Brahim Diaz
+Kenan Yildiz
+Teun Koopmeiners
+Mateo Retegui
+Ademola Lookman
+Charles De Ketelaere
+Christian Eriksen
+Rasmus Hojlund
+Martin Odegaard
+Sergej Milinkovic-Savic
+Dusan Tadic
